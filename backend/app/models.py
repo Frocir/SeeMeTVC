@@ -1,0 +1,95 @@
+from datetime import datetime
+from enum import Enum
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db import Base
+
+
+class UserRole(str, Enum):
+    USER = "user"
+    SUPER_ADMIN = "super_admin"
+
+
+class JobStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    REFUNDED = "refunded"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[str] = mapped_column(String(120), default="")
+    role: Mapped[str] = mapped_column(String(32), default=UserRole.USER.value, index=True)
+    balance: Mapped[float] = mapped_column(Float, default=0.0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    jobs: Mapped[list["VideoJob"]] = relationship(back_populates="user")
+
+
+class Channel(Base):
+    """Upstream token/API-key source managed by super admin."""
+
+    __tablename__ = "channels"
+    __table_args__ = (UniqueConstraint("name", name="uq_channel_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    provider: Mapped[str] = mapped_column(String(64), default="fal")  # fal | volcengine
+    base_url: Mapped[str] = mapped_column(String(512), default="")
+    api_key: Mapped[str] = mapped_column(Text)
+    # Model id exposed to users, e.g. seedance-lite / seedance-2.5
+    model_id: Mapped[str] = mapped_column(String(120), index=True)
+    # Upstream model path, e.g. fal-ai/bytedance/seedance/v1/lite/text-to-video
+    upstream_model: Mapped[str] = mapped_column(String(255))
+    # Balance cost per second of video (user-facing units)
+    cost_per_second: Mapped[float] = mapped_column(Float, default=1.0)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    remark: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class VideoJob(Base):
+    __tablename__ = "video_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)
+    model_id: Mapped[str] = mapped_column(String(120))
+    prompt: Mapped[str] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=5)
+    status: Mapped[str] = mapped_column(String(32), default=JobStatus.PENDING.value, index=True)
+    cost: Mapped[float] = mapped_column(Float, default=0.0)
+    balance_after: Mapped[float | None] = mapped_column(Float, nullable=True)
+    upstream_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    result_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    user: Mapped["User"] = relationship(back_populates="jobs")
