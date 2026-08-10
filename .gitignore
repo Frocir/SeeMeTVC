@@ -13,6 +13,7 @@ build/
 .DS_Store
 *.log
 pgdata/
+backend/data/
 .idea/
 .vscode/
 *.db

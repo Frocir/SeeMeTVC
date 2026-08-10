@@ -106,9 +106,72 @@ class JobOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ParallelQuotaOut(BaseModel):
+    max_parallel: int
+    active: int
+    available: int
+
+
 class AdminSetBalanceIn(BaseModel):
     balance: float = Field(ge=0)
 
 
 class AdminUserOut(UserOut):
     pass
+
+
+# ── Workflow (ComfyUI-like DAG) ──────────────────────────────────────────────
+
+
+class WorkflowGraphIn(BaseModel):
+    nodes: list[dict] = Field(default_factory=list)
+    edges: list[dict] = Field(default_factory=list)
+
+
+class WorkflowCreateIn(BaseModel):
+    name: str = Field(default="未命名工作流", max_length=200)
+    graph: WorkflowGraphIn | None = None
+
+
+class WorkflowUpdateIn(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    graph: WorkflowGraphIn | None = None
+
+
+class WorkflowOut(BaseModel):
+    id: int
+    name: str
+    graph: dict
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class WorkflowRunCreateIn(BaseModel):
+    workflow_id: int | None = None
+    graph: WorkflowGraphIn | None = None
+    name: str | None = Field(default=None, max_length=200)
+
+
+class WorkflowNodeStateOut(BaseModel):
+    status: str
+    output: dict | None = None
+    error: str | None = None
+    cost: float = 0.0
+
+
+class WorkflowRunOut(BaseModel):
+    id: int
+    workflow_id: int | None
+    status: str
+    graph: dict
+    node_states: dict
+    cost: float
+    balance_after: float | None
+    result_url: str | None
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

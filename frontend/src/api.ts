@@ -62,6 +62,28 @@ export type Job = {
   created_at: string;
 };
 
+export type ParallelQuota = {
+  max_parallel: number;
+  active: number;
+  available: number;
+};
+
+export const STATUS_LABEL: Record<string, string> = {
+  pending: "排队中",
+  running: "生成中",
+  succeeded: "已完成",
+  failed: "失败",
+  refunded: "已退款",
+};
+
+export function isActiveJob(status: string) {
+  return status === "pending" || status === "running";
+}
+
+export function isTerminalJob(status: string) {
+  return status === "succeeded" || status === "failed" || status === "refunded";
+}
+
 export type Channel = {
   id: number;
   name: string;
@@ -84,3 +106,72 @@ export type AdminUser = {
   balance: number;
   is_active: boolean;
 };
+
+export type WorkflowGraph = {
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+};
+
+export type Workflow = {
+  id: number;
+  name: string;
+  graph: WorkflowGraph;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkflowNodeState = {
+  status: string;
+  output?: Record<string, unknown> | null;
+  error?: string | null;
+  cost?: number;
+};
+
+export type WorkflowRun = {
+  id: number;
+  workflow_id: number | null;
+  status: string;
+  graph: WorkflowGraph;
+  node_states: Record<string, WorkflowNodeState>;
+  cost: number;
+  balance_after: number | null;
+  result_url: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export function isActiveRun(status: string) {
+  return status === "pending" || status === "running";
+}
+
+export function isTerminalRun(status: string) {
+  return status === "succeeded" || status === "failed" || status === "refunded";
+}
+
+export type UploadImageResult = {
+  url: string;
+  filename: string;
+  size: number;
+};
+
+/** Multipart upload for reference images; returns a same-origin /uploads/... URL. */
+export async function uploadImage(file: File): Promise<UploadImageResult> {
+  const body = new FormData();
+  body.append("file", file);
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch("/api/uploads/images", { method: "POST", headers, body });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = data.detail || JSON.stringify(data);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(typeof detail === "string" ? detail : "上传失败");
+  }
+  return res.json();
+}

@@ -23,6 +23,9 @@ services:
       CORS_ORIGINS: http://localhost:5173,http://localhost:3000
       BOOTSTRAP_ADMIN_EMAIL: admin@example.com
       BOOTSTRAP_ADMIN_PASSWORD: admin123456
+      UPLOAD_DIR: /app/data/uploads
+    volumes:
+      - uploads:/app/data/uploads
     ports:
       - "8000:8000"
     depends_on:
@@ -38,3 +41,4 @@ services:
 
 volumes:
   pgdata:
+  uploads:

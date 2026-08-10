@@ -2,8 +2,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from app.api import admin_users, auth, channels, videos
+from app.api import admin_users, auth, channels, uploads, videos, workflows
+from app.api.uploads import uploads_root
 from app.bootstrap import ensure_bootstrap_data
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine
@@ -11,6 +13,7 @@ from app.db import Base, SessionLocal, engine
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    uploads_root()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with SessionLocal() as db:
@@ -32,7 +35,12 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api")
 app.include_router(channels.router, prefix="/api")
 app.include_router(videos.router, prefix="/api")
+app.include_router(workflows.router, prefix="/api")
+app.include_router(uploads.router, prefix="/api")
 app.include_router(admin_users.router, prefix="/api")
+
+# Local reference images (UUID filenames); preview in UI via <img src="/uploads/...">
+app.mount("/uploads", StaticFiles(directory=str(uploads_root())), name="uploads")
 
 
 @app.get("/api/health")

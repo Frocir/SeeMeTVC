@@ -53,7 +53,7 @@ class Channel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
-    provider: Mapped[str] = mapped_column(String(64), default="fal")  # fal | volcengine
+    provider: Mapped[str] = mapped_column(String(64), default="fal")  # fal | mock | agnes | pavo
     base_url: Mapped[str] = mapped_column(String(512), default="")
     api_key: Mapped[str] = mapped_column(Text)
     # Model id exposed to users, e.g. seedance-lite / seedance-2.5
@@ -93,3 +93,57 @@ class VideoJob(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="jobs")
+
+
+class WorkflowStatus(str, Enum):
+    DRAFT = "draft"
+
+
+class WorkflowRunStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    REFUNDED = "refunded"
+
+
+class Workflow(Base):
+    """Saved node-graph draft (ComfyUI-like, beauty-TVC scoped)."""
+
+    __tablename__ = "workflows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200), default="未命名工作流")
+    graph_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    runs: Mapped[list["WorkflowRun"]] = relationship(back_populates="workflow")
+
+
+class WorkflowRun(Base):
+    """One execution of a workflow graph."""
+
+    __tablename__ = "workflow_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workflow_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default=WorkflowRunStatus.PENDING.value, index=True)
+    graph_json: Mapped[str] = mapped_column(Text, default="{}")
+    node_states_json: Mapped[str] = mapped_column(Text, default="{}")
+    cost: Mapped[float] = mapped_column(Float, default=0.0)
+    balance_after: Mapped[float | None] = mapped_column(Float, nullable=True)
+    result_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    workflow: Mapped["Workflow | None"] = relationship(back_populates="runs")

@@ -1,16 +1,19 @@
 import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user
 from app.models import Channel, JobStatus, User, VideoJob
-from app.schemas import GenerateIn, JobOut
+from app.schemas import GenerateIn, JobOut, ParallelQuotaOut
 from app.services import seedance
 
 router = APIRouter(prefix="/videos", tags=["videos"])
+
+ACTIVE_STATUSES = (JobStatus.PENDING.value, JobStatus.RUNNING.value)
 
 
 async def _pick_channel(db: AsyncSession, model_id: str) -> Channel | None:
@@ -70,6 +73,29 @@ async def _run_job(job_id: int) -> None:
             await db.commit()
 
 
+async def _count_active_jobs(db: AsyncSession, user_id: int) -> int:
+    result = await db.execute(
+        select(func.count())
+        .select_from(VideoJob)
+        .where(VideoJob.user_id == user_id, VideoJob.status.in_(ACTIVE_STATUSES))
+    )
+    return int(result.scalar_one())
+
+
+@router.get("/parallel-quota", response_model=ParallelQuotaOut)
+async def parallel_quota(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ParallelQuotaOut:
+    settings = get_settings()
+    active = await _count_active_jobs(db, user.id)
+    return ParallelQuotaOut(
+        max_parallel=settings.max_parallel_jobs,
+        active=active,
+        available=max(0, settings.max_parallel_jobs - active),
+    )
+
+
 @router.post("/generate", response_model=JobOut)
 async def generate(
     body: GenerateIn,
@@ -77,6 +103,14 @@ async def generate(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> VideoJob:
+    settings = get_settings()
+    active = await _count_active_jobs(db, user.id)
+    if active >= settings.max_parallel_jobs:
+        raise HTTPException(
+            status_code=429,
+            detail=f"并行任务已满（最多同时 {settings.max_parallel_jobs} 个），请等待进行中的任务完成",
+        )
+
     channel = await _pick_channel(db, body.model_id)
     if channel is None:
         raise HTTPException(status_code=400, detail="模型不可用或未配置渠道")
@@ -109,10 +143,16 @@ async def generate(
 async def list_my_jobs(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    status: str | None = None,
+    limit: int = 100,
 ) -> list[VideoJob]:
-    result = await db.execute(
-        select(VideoJob).where(VideoJob.user_id == user.id).order_by(VideoJob.id.desc()).limit(100)
-    )
+    limit = max(1, min(limit, 200))
+    stmt = select(VideoJob).where(VideoJob.user_id == user.id)
+    if status:
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+        if statuses:
+            stmt = stmt.where(VideoJob.status.in_(statuses))
+    result = await db.execute(stmt.order_by(VideoJob.id.desc()).limit(limit))
     return list(result.scalars().all())
 
 
