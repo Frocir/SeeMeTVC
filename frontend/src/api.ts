@@ -74,6 +74,7 @@ export const STATUS_LABEL: Record<string, string> = {
   succeeded: "已完成",
   failed: "失败",
   refunded: "已退款",
+  cancelled: "已取消",
 };
 
 export function isActiveJob(status: string) {
@@ -110,6 +111,8 @@ export type AdminUser = {
 export type WorkflowGraph = {
   nodes: Array<Record<string, unknown>>;
   edges: Array<Record<string, unknown>>;
+  kind?: string;
+  project?: Record<string, unknown>;
 };
 
 export type Workflow = {
@@ -125,6 +128,7 @@ export type WorkflowNodeState = {
   output?: Record<string, unknown> | null;
   error?: string | null;
   cost?: number;
+  hint?: string | null;
 };
 
 export type WorkflowRun = {
@@ -146,7 +150,143 @@ export function isActiveRun(status: string) {
 }
 
 export function isTerminalRun(status: string) {
-  return status === "succeeded" || status === "failed" || status === "refunded";
+  return (
+    status === "succeeded" ||
+    status === "failed" ||
+    status === "refunded" ||
+    status === "cancelled"
+  );
+}
+
+const POLL_INTERVAL_MS = 1500;
+
+function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const t = window.setTimeout(() => resolve(), ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(t);
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
+}
+
+/** Subscribe to workflow run progress via SSE; poll until terminal if SSE fails or ends early. */
+export function subscribeWorkflowRun(
+  runId: number,
+  onUpdate: (run: WorkflowRun) => void | Promise<void>,
+  signal?: AbortSignal,
+): () => void {
+  const ctrl = new AbortController();
+  const onAbort = () => ctrl.abort();
+  signal?.addEventListener("abort", onAbort);
+
+  let closed = false;
+  const stop = () => {
+    if (closed) return;
+    closed = true;
+    ctrl.abort();
+    signal?.removeEventListener("abort", onAbort);
+  };
+
+  const pollUntilDone = async () => {
+    while (!closed) {
+      const fresh = await api<WorkflowRun>(`/api/workflows/runs/${runId}`);
+      await onUpdate(fresh);
+      if (isTerminalRun(fresh.status)) {
+        stop();
+        return;
+      }
+      await sleep(POLL_INTERVAL_MS, ctrl.signal);
+    }
+  };
+
+  void (async () => {
+    const token = getToken();
+    try {
+      const res = await fetch(`/api/workflows/runs/${runId}/events`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: ctrl.signal,
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`SSE ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (!closed) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const chunks = buf.split("\n\n");
+        buf = chunks.pop() || "";
+        for (const chunk of chunks) {
+          const lines = chunk.split("\n");
+          let event = "message";
+          const dataLines: string[] = [];
+          for (const line of lines) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+          }
+          if (!dataLines.length) continue;
+          if (event === "done") {
+            stop();
+            return;
+          }
+          if (event === "run" || event === "message") {
+            try {
+              const run = JSON.parse(dataLines.join("\n")) as WorkflowRun;
+              await onUpdate(run);
+              if (isTerminalRun(run.status)) {
+                stop();
+                return;
+              }
+            } catch {
+              /* ignore bad frame */
+            }
+          }
+        }
+      }
+      // Stream closed without a terminal/done frame — keep polling.
+      if (!closed) await pollUntilDone();
+    } catch (e) {
+      if (closed || (e instanceof DOMException && e.name === "AbortError")) return;
+      try {
+        await pollUntilDone();
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+      }
+    }
+  })();
+
+  return stop;
+}
+
+export async function uploadVideo(file: File): Promise<UploadImageResult> {
+  const body = new FormData();
+  body.append("file", file);
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch("/api/uploads/videos", { method: "POST", headers, body });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = data.detail || JSON.stringify(data);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(typeof detail === "string" ? detail : "上传失败");
+  }
+  return res.json();
 }
 
 export type UploadImageResult = {

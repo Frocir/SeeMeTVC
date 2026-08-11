@@ -1,78 +1,61 @@
 # SeeMeTVC
 
-美妆 TVC 创意广告生成平台：工作室一键出片 + 轻量节点工作流（类 ComfyUI，不嵌入 ComfyUI）。前后端分离开发，`docker compose up` 一次拉起。
+美妆 TVC 一体仓：工作室一键出片 + LibTV 风格无限画布。FastAPI + React。
 
-- **细化方案（架构与进度）：** [细化方案.md](细化方案.md)
-- **产品计划书（PRD）：** [项目计划书.md](项目计划书.md)
+- **细化方案（路线 / 能力 / 架构）：** [细化方案.md](细化方案.md)
+- **产品计划书：** [项目计划书.md](项目计划书.md)
+- 画布参考：[LibTV Canvas](https://www.liblib.tv/canvas)
 
-## 产品边界（当前）
+## 当前能力
 
-- 用户只看到**余额**与**消耗 / 余额变化**，不展示 token
-- 超管维护上游渠道（Key、模型、每秒扣费、启停）
-- 上游支持：`mock`（联调）、`fal`（Seedance 等）、`agnes` / Pavo（免费渠道，需自备 Key）
-- 参考图支持公网 URL 与**本地上传**（本机素材会在提交上游前内联，避免 Agnes 拉不到 `localhost`）
-- 工作流固定节点：`BriefInput` → `ScenePlan` → `MakeupControl` → `ShotGenerate` → `TimelineMux` → `PreviewOut`
-- 不做独立 new-api、不嵌入完整 ComfyUI、不做用户侧 token 审计大盘
+| 入口 | 说明 |
+|------|------|
+| `/` 工作室 | 一键快出片（可并行多 Job） |
+| `/workflow` 画布 | 主工作流：模板、节点连线、单飞执行、SSE、trim/拼接、超管模拟 |
+| `/showcase` 灵感 | Lookbook 浏览；同款提示词在工作室素材墙可一键套用 |
+| `/history` 作品 | 工作室 Job + 画布 Run 成片回看 |
+| `/admin` 超管 | 渠道 / Key / 用户余额 |
 
-## 快速启动
+- 用户只看**余额**与消耗；超管维护渠道（Key、模型、每秒扣费）
+- 上游：`mock`（本地样片，依赖 ffmpeg） / `fal` / `agnes`（免费档易 429）
+- 画布可命名保存多个草稿；完整「多项目空间 / 素材库抽屉」见细化方案 §0（暂搁）
+- **下一个里程碑**：声音工作流（详见细化方案 §0）
+
+## 两种启动方式
+
+### A. Docker 一键（体验完整栈）
 
 ```bash
 docker compose up --build
 ```
 
-- Web: http://localhost:5173
-- API: http://localhost:8000/api/health
-- 默认超管：`admin@example.com` / `admin123456`
+- Web：**nginx 静态站** → http://localhost:5173（或 http://127.0.0.1:5173；`/api` 与 `/uploads` 已反代）
+- API → http://localhost:8000/api/health（镜像内已装 **ffmpeg**，可看 `ffmpeg_ok`；库为 Postgres）
+- 改前端源码请用下方「本地开发」，不要指望 compose 里的 HMR
 
-## 本地开发（无 Docker）
-
-默认 SQLite + 本地上传目录 `backend/data/uploads`：
+### B. 本地开发（改 UI / 热重载）
 
 ```bash
-# 后端
-cd backend
-python -m venv .venv
-.venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
+# 后端（默认 SQLite → backend/seemetvc.db）
+cd backend && python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
-# 可选：复制 .env.example 为 .env，填入 AGNES_API_KEY 等
+# 可选：复制 .env.example 为 .env，填 AGNES_API_KEY / FFMPEG_PATH
 uvicorn app.main:app --reload --port 8000
 
-# 前端（另开终端）
-cd frontend
-npm install
-npm run dev
+# 前端（另开终端；Vite 已代理 /api 与 /uploads → :8000）
+cd frontend && npm install && npm run dev
 ```
 
-Vite 已将 `/api` 与 `/uploads` 代理到 `:8000`。
+- Web: Vite → http://localhost:5173（`host: true`，127.0.0.1 也可）
+- **ffmpeg**：mock 样片、trim、拼接都需要；本机 PATH 有 ffmpeg，或在 `backend/.env` 设 `FFMPEG_PATH`
+- 默认模型：**mock**（优先级高于 Agnes）；启动时会 heal 启用 mock
+- Agnes 免费档易触发 429（进程内有最小间隔与退避）；演示全链路请优先用 mock
+- 超管：`admin@example.com` / `admin123456`（开发阶段登录页会预填，方便调试）
 
-## 目录
+## 典型流程（画布）
 
-```text
-backend/    FastAPI：鉴权、余额、渠道、上传、视频任务、工作流执行
-frontend/   React：工作室 / 工作流 / 素材 / 作品 / 超管
-docker-compose.yml
-细化方案.md
-项目计划书.md
-```
-
-## 页面一览
-
-| 入口 | 说明 |
-|------|------|
-| 工作室 | 美妆素材墙、并行生成、成片预览；可「回到素材」 |
-| 工作流 | React Flow 画布，保存草稿并执行 DAG |
-| 素材 | 宣传样例浏览 |
-| 作品 | 历史成片与任务状态 |
-| 超管后台 | 渠道与用户余额（仅 super_admin） |
-
-## 典型流程
-
-1. （可选）在 `.env` 配置 `AGNES_API_KEY`，超管后台启用 Agnes 渠道；或添加 `fal` 渠道并填 Key
-2. 工作室：点素材或上传参考图 → 选模型 → 生成；按 `cost_per_second × 时长` 扣余额
-3. 工作流：编辑 Brief / 分镜 / 妆容节点 → 执行 → 轮询节点状态与成片
-4. 失败自动退款；作品页只看消耗与余额变化
-
-## Agnes 提示
-
-- 国内 Key 建议 `AGNES_BASE_URL=https://api.agnes-ai.cn`
-- 参考图不要用仅本机可访问的绝对 URL；请用「上传」或素材墙（系统会自动处理）
+1. 打开「画布」→ 选用美妆模板或添加节点  
+2. 按槽位连线；出口类上游变化可自动再跑（同时只跑一个 Run，可取消）  
+3. 节点内看图/播视频；进度走 SSE（失败则自动轮询）  
+4. 超管失败时可粘贴/上传模拟结果（前端填入，不计费）  
+5. 生成失败自动退款；成片在「作品」回看  

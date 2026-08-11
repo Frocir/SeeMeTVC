@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import {
   api,
   isActiveJob,
@@ -163,9 +164,29 @@ export default function StudioPage() {
         </div>
 
         <form className="studio-form" onSubmit={onSubmit}>
+          {models.length === 0 && (
+            <div className="empty-hint" role="status">
+              <strong>暂无可用模型</strong>
+              <p className="muted">
+                请超管在「超管」页启用渠道。本地演示请启用{" "}
+                <code>Seedance Lite (mock)</code>。
+              </p>
+              {me?.role === "super_admin" && (
+                <Link className="linkish" to="/admin">
+                  去超管启用渠道 →
+                </Link>
+              )}
+            </div>
+          )}
           <label>
             模型
-            <select value={modelId} onChange={(e) => setModelId(e.target.value)} required>
+            <select
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              required
+              disabled={models.length === 0}
+            >
+              {models.length === 0 && <option value="">（无可用模型）</option>}
               {models.map((m) => (
                 <option key={m.model_id} value={m.model_id}>
                   {m.model_id}
@@ -215,9 +236,9 @@ export default function StudioPage() {
           <button
             type="submit"
             className="block primary"
-            disabled={busy || !modelId || atParallelLimit}
+            disabled={busy || !modelId || atParallelLimit || models.length === 0}
           >
-            {submitLabel}
+            {models.length === 0 ? "请先启用模型" : submitLabel}
           </button>
         </form>
 

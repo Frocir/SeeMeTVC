@@ -8,6 +8,7 @@ const heroTiles = BEAUTY_PROMOS.slice(0, 3);
 export default function LoginPage() {
   const { me, login, register } = useAuth();
   const [mode, setMode] = useState<"login" | "register">("login");
+  // Dev convenience: prefill bootstrap admin (keep for local iteration).
   const [email, setEmail] = useState("admin@example.com");
   const [password, setPassword] = useState("admin123456");
   const [name, setName] = useState("");
@@ -62,7 +63,13 @@ export default function LoginPage() {
             )}
             <label>
               邮箱
-              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" required />
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                type="email"
+                required
+                autoComplete="username"
+              />
             </label>
             <label>
               密码
@@ -72,6 +79,7 @@ export default function LoginPage() {
                 type="password"
                 required
                 minLength={6}
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
               />
             </label>
             {error && <p className="error">{error}</p>}
@@ -86,6 +94,9 @@ export default function LoginPage() {
           >
             {mode === "login" ? "没有账号？注册" : "已有账号？登录"}
           </button>
+          {mode === "login" && (
+            <p className="auth-demo-hint muted">开发阶段已预填本地超管账号，上线前请去掉。</p>
+          )}
         </div>
       </div>
     </div>

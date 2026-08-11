@@ -11,19 +11,55 @@ Network: auto-detect local SOCKS/HTTP proxy via app.services.net
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import httpx
 
+from app.api.uploads import async_resolve_image_for_upstream
+from app.config import get_settings
 from app.models import Channel
 from app.services.net import agnes_should_force_direct, make_async_client, resolve_agnes_base_url
-from app.api.uploads import async_resolve_image_for_upstream
 
 AGNES_PROVIDERS = {"agnes", "pavo", "agnes-pavo"}
+
+# Process-wide throttle: Agnes free tier rate-limits status queries hard.
+_agnes_gate = asyncio.Lock()
+_agnes_last_call_at = 0.0
 
 
 class SeedanceError(Exception):
     pass
+
+
+def _agnes_min_gap() -> float:
+    return max(0.0, float(get_settings().agnes_min_gap_sec or 0))
+
+
+def _agnes_429_sleep() -> float:
+    return max(1.0, float(get_settings().agnes_429_base_sleep_sec or 25.0))
+
+
+async def _agnes_gated(factory):
+    """Run one Agnes HTTP call under a process-wide lock + minimum gap."""
+    global _agnes_last_call_at
+    async with _agnes_gate:
+        now = time.monotonic()
+        wait = _agnes_min_gap() - (now - _agnes_last_call_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            return await factory()
+        finally:
+            _agnes_last_call_at = time.monotonic()
+
+
+async def _agnes_backoff_429() -> None:
+    """Hold the gate while sleeping after a 429 so all callers wait."""
+    global _agnes_last_call_at
+    async with _agnes_gate:
+        await asyncio.sleep(_agnes_429_sleep())
+        _agnes_last_call_at = time.monotonic()
 
 
 def _client(timeout: float = 60.0, *, force_direct: bool = False) -> httpx.AsyncClient:
@@ -62,7 +98,9 @@ async def submit_generation(
         raise SeedanceError(str(exc)) from exc
 
     if _is_mock(channel):
-        return f"mock-{asyncio.get_running_loop().time()}"
+        # Encode duration so poll can emit a matching local clip for trim/mux.
+        dur = max(1, min(int(duration_seconds or 5), 15))
+        return f"mock-{dur}-{asyncio.get_running_loop().time()}"
 
     if _is_agnes(channel):
         return await _submit_agnes(channel, prompt=prompt, duration_seconds=duration_seconds, image_url=image_url)
@@ -73,14 +111,28 @@ async def submit_generation(
     raise SeedanceError(f"暂未实现的 provider: {channel.provider}")
 
 
+def _mock_duration_from_task(task_id: str) -> int:
+    """Parse duration from mock-{seconds}-{...}; default 5."""
+    try:
+        parts = (task_id or "").split("-")
+        if len(parts) >= 2 and parts[0] == "mock":
+            return max(1, min(int(float(parts[1])), 15))
+    except (TypeError, ValueError):
+        pass
+    return 5
+
+
 async def poll_generation(channel: Channel, task_id: str) -> tuple[str, str | None]:
     """Return (status, result_url). status in: running|succeeded|failed."""
     if _is_mock(channel, task_id):
         await asyncio.sleep(1.0)
-        return (
-            "succeeded",
-            "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
-        )
+        from app.services.media_ops import MediaOpsError, ensure_mock_demo_clip
+
+        try:
+            url = await ensure_mock_demo_clip(_mock_duration_from_task(task_id))
+        except MediaOpsError as exc:
+            raise SeedanceError(str(exc)) from exc
+        return ("succeeded", url)
 
     if _is_agnes(channel) or task_id.startswith("agnes:"):
         return await _poll_agnes(channel, task_id)
@@ -185,19 +237,29 @@ async def _submit_agnes(
         "Authorization": f"Bearer {channel.api_key}",
         "Content-Type": "application/json",
     }
-    async with _client(force_direct=agnes_should_force_direct(base)) as client:
-        resp = await client.post(f"{base}/v1/videos", json=payload, headers=headers)
-        if resp.status_code >= 400:
-            raise SeedanceError(f"Agnes 提交失败: {resp.status_code} {resp.text[:300]}")
-        data = resp.json()
-        video_id = data.get("video_id") or data.get("task_id") or data.get("id")
-        if not video_id:
-            raise SeedanceError(f"Agnes 未返回 video_id: {data}")
-        return f"agnes:{base}|{video_id}"
+
+    async def _do():
+        async with _client(force_direct=agnes_should_force_direct(base)) as client:
+            return await client.post(f"{base}/v1/videos", json=payload, headers=headers)
+
+    resp = await _agnes_gated(_do)
+    if resp.status_code == 429:
+        await _agnes_backoff_429()
+        raise SeedanceError("Agnes 提交被限流（429），请稍后再试；可重跑该节点")
+    if resp.status_code >= 400:
+        raise SeedanceError(f"Agnes 提交失败: {resp.status_code} {resp.text[:300]}")
+    data = resp.json()
+    video_id = data.get("video_id") or data.get("task_id") or data.get("id")
+    if not video_id:
+        raise SeedanceError(f"Agnes 未返回 video_id: {data}")
+    return f"agnes:{base}|{video_id}"
 
 
 async def _poll_agnes(channel: Channel, task_id: str) -> tuple[str, str | None]:
-    """Poll Agnes result via GET /agnesapi?video_id=..."""
+    """Poll Agnes result via GET /agnesapi?video_id=...
+
+    Returns status in: running|succeeded|failed|rate_limited
+    """
     raw = task_id.removeprefix("agnes:")
     if "|" in raw:
         base, video_id = raw.split("|", 1)
@@ -207,32 +269,38 @@ async def _poll_agnes(channel: Channel, task_id: str) -> tuple[str, str | None]:
     model = channel.upstream_model or "agnes-video-v2.0"
     headers = {"Authorization": f"Bearer {channel.api_key}"}
 
-    async with _client(force_direct=agnes_should_force_direct(base)) as client:
-        resp = await client.get(
-            f"{base}/agnesapi",
-            params={"video_id": video_id, "model_name": model},
-            headers=headers,
-        )
-        if resp.status_code == 404:
-            return "running", None
-        if resp.status_code >= 400:
-            raise SeedanceError(f"Agnes 状态查询失败: {resp.status_code} {resp.text[:300]}")
-        data = resp.json()
-        st = str(data.get("status", "")).lower()
-        if st in {"queued", "in_progress", "pending", "processing"}:
-            return "running", None
-        if st in {"failed", "error", "cancelled"}:
-            err = data.get("error")
-            if err:
-                raise SeedanceError(f"Agnes 生成失败: {err}")
-            return "failed", None
-        if st != "completed":
-            return "running", None
+    async def _do():
+        async with _client(force_direct=agnes_should_force_direct(base)) as client:
+            return await client.get(
+                f"{base}/agnesapi",
+                params={"video_id": video_id, "model_name": model},
+                headers=headers,
+            )
 
-        meta = data.get("metadata") or {}
-        url = meta.get("url") or data.get("url") or data.get("video_url")
-        if isinstance(url, dict):
-            url = url.get("url")
-        if not url:
-            raise SeedanceError(f"Agnes 结果无视频地址: {data}")
-        return "succeeded", str(url)
+    resp = await _agnes_gated(_do)
+    if resp.status_code == 404:
+        return "running", None
+    if resp.status_code == 429:
+        await _agnes_backoff_429()
+        return "rate_limited", None
+    if resp.status_code >= 400:
+        raise SeedanceError(f"Agnes 状态查询失败: {resp.status_code} {resp.text[:300]}")
+    data = resp.json()
+    st = str(data.get("status", "")).lower()
+    if st in {"queued", "in_progress", "pending", "processing"}:
+        return "running", None
+    if st in {"failed", "error", "cancelled"}:
+        err = data.get("error")
+        if err:
+            raise SeedanceError(f"Agnes 生成失败: {err}")
+        return "failed", None
+    if st != "completed":
+        return "running", None
+
+    meta = data.get("metadata") or {}
+    url = meta.get("url") or data.get("url") or data.get("video_url")
+    if isinstance(url, dict):
+        url = url.get("url")
+    if not url:
+        raise SeedanceError(f"Agnes 结果无视频地址: {data}")
+    return "succeeded", str(url)

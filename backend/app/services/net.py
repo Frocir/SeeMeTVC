@@ -21,8 +21,6 @@ import httpx
 _COMMON_SOCKS_PORTS = (7897, 7891, 7890, 1080, 10808, 1086)
 _COMMON_HTTP_PORTS = (7897, 7890, 7892, 10809, 1087, 8118)
 _CACHE_TTL_SEC = 20.0
-_cached_plan: ProxyPlan | None = None  # type: ignore[name-defined]
-_cached_at = 0.0
 
 
 @dataclass(frozen=True)
@@ -30,6 +28,10 @@ class ProxyPlan:
     mode: str  # socks | http | direct
     proxy_url: str | None
     reason: str
+
+
+_cached_plan: ProxyPlan | None = None
+_cached_at = 0.0
 
 
 def _tcp_open(host: str, port: int, timeout: float = 0.25) -> bool:

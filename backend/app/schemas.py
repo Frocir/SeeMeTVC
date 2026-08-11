@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class TokenOut(BaseModel):
@@ -124,8 +124,14 @@ class AdminUserOut(UserOut):
 
 
 class WorkflowGraphIn(BaseModel):
+    """DAG graph, optionally wrapping a Liblib WorkflowProject envelope."""
+
+    model_config = ConfigDict(extra="allow")
+
     nodes: list[dict] = Field(default_factory=list)
     edges: list[dict] = Field(default_factory=list)
+    kind: str | None = None
+    project: dict | None = None
 
 
 class WorkflowCreateIn(BaseModel):
@@ -152,6 +158,8 @@ class WorkflowRunCreateIn(BaseModel):
     workflow_id: int | None = None
     graph: WorkflowGraphIn | None = None
     name: str | None = Field(default=None, max_length=200)
+    # Optional: only execute these node ids (serial queue / single-node).
+    target_ids: list[str] | None = None
 
 
 class WorkflowNodeStateOut(BaseModel):

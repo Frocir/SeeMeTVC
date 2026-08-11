@@ -5,7 +5,7 @@ import HistoryPage from "./pages/HistoryPage";
 import LoginPage from "./pages/LoginPage";
 import ShowcasePage from "./pages/ShowcasePage";
 import StudioPage from "./pages/StudioPage";
-import WorkflowPage from "./pages/WorkflowPage";
+import WorkflowCanvasPage from "./pages/WorkflowCanvasPage";
 
 function Shell({
   children,
@@ -25,10 +25,16 @@ function Shell({
           <NavLink to="/" end>
             工作室
           </NavLink>
-          <NavLink to="/workflow">工作流</NavLink>
-          <NavLink to="/showcase">素材</NavLink>
-          <NavLink to="/history">作品</NavLink>
-          {me?.role === "super_admin" && <NavLink to="/admin">超管后台管理</NavLink>}
+          <NavLink to="/workflow" end>
+            画布
+          </NavLink>
+          <NavLink to="/showcase" title="Lookbook 灵感素材，可套用到工作室">
+            灵感
+          </NavLink>
+          <NavLink to="/history" title="工作室与画布成片回看">
+            作品
+          </NavLink>
+          {me?.role === "super_admin" && <NavLink to="/admin">超管</NavLink>}
         </nav>
         <div className="topbar-right">
           {me && (
@@ -75,10 +81,14 @@ export default function App() {
         path="/workflow"
         element={
           <Private layout="tool">
-            <WorkflowPage />
+            <WorkflowCanvasPage />
           </Private>
         }
       />
+      {/* Old experiment / legacy URLs → main canvas */}
+      <Route path="/workflow/stage" element={<Navigate to="/workflow" replace />} />
+      <Route path="/workflow/board" element={<Navigate to="/workflow" replace />} />
+      <Route path="/workflow/legacy" element={<Navigate to="/workflow" replace />} />
       <Route
         path="/showcase"
         element={

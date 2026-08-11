@@ -5,9 +5,9 @@ export default function ShowcasePage() {
     <section className="showcase-page">
       <div className="page-head">
         <p className="eyebrow">Lookbook</p>
-        <h1>美妆 TVC 宣传素材库</h1>
+        <h1>美妆 TVC 灵感库</h1>
         <p className="lead">
-          汇集唇妆、底妆、护肤、香氛等面部美妆垂类成片灵感。当前为公开网络素材占位，后续可替换为品牌实拍片。
+          唇妆、底妆、护肤等垂类成片灵感。点进工作室可一键套用镜头提示词；正式成片请到「作品」回看。
         </p>
       </div>
       <BeautyPromoGallery

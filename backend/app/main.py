@@ -45,4 +45,16 @@ app.mount("/uploads", StaticFiles(directory=str(uploads_root())), name="uploads"
 
 @app.get("/api/health")
 async def health() -> dict:
-    return {"ok": True, "service": "SeeMeTVC"}
+    ffmpeg_ok = False
+    ffmpeg_hint = ""
+    try:
+        from pathlib import Path
+
+        from app.services.media_ops import _ffmpeg_bin
+
+        # Expose basename only — never leak absolute install paths
+        ffmpeg_hint = Path(_ffmpeg_bin()).name
+        ffmpeg_ok = True
+    except Exception as exc:  # noqa: BLE001
+        ffmpeg_hint = str(exc)[:200]
+    return {"ok": True, "service": "SeeMeTVC", "ffmpeg_ok": ffmpeg_ok, "ffmpeg": ffmpeg_hint}

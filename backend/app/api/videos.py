@@ -52,8 +52,11 @@ async def _run_job(job_id: int) -> None:
             job.upstream_task_id = task_id
             await db.commit()
 
-            # Poll up to ~3 minutes
-            for _ in range(36):
+            # Poll up to ~3–10 minutes (Agnes slower + 429 backoff)
+            is_agnes = channel.provider.lower() in {"agnes", "pavo", "agnes-pavo"}
+            interval = 12.0 if is_agnes else 5.0
+            polls = 60 if is_agnes else 36
+            for _ in range(polls):
                 status, url = await seedance.poll_generation(channel, task_id)
                 if status == "succeeded":
                     job.status = JobStatus.SUCCEEDED.value
@@ -62,7 +65,10 @@ async def _run_job(job_id: int) -> None:
                     return
                 if status == "failed":
                     raise seedance.SeedanceError("上游生成失败")
-                await asyncio.sleep(5)
+                if status == "rate_limited":
+                    await asyncio.sleep(20.0)
+                    continue
+                await asyncio.sleep(interval)
 
             raise seedance.SeedanceError("生成超时")
         except Exception as exc:  # noqa: BLE001 — surface to job record + refund

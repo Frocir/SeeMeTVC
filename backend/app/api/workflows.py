@@ -1,10 +1,12 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.deps import get_current_user
 from app.models import User, Workflow, WorkflowRun, WorkflowRunStatus
 from app.schemas import (
@@ -17,6 +19,14 @@ from app.schemas import (
 from app.services.workflow_exec import execute_run
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
+
+
+_TERMINAL = {
+    WorkflowRunStatus.SUCCEEDED.value,
+    WorkflowRunStatus.FAILED.value,
+    WorkflowRunStatus.REFUNDED.value,
+    WorkflowRunStatus.CANCELLED.value,
+}
 
 
 def _graph_dumps(graph: dict | None) -> str:
@@ -116,11 +126,20 @@ async def start_run(
     if not nodes:
         raise HTTPException(status_code=400, detail="工作流图为空")
 
+    if body.target_ids:
+        graph_dict = {
+            **graph_dict,
+            "__run_opts__": {
+                **(graph_dict.get("__run_opts__") or {}),
+                "target_ids": list(body.target_ids),
+            },
+        }
+
     if workflow_id is None and body.name:
         wf = Workflow(
             user_id=user.id,
             name=body.name,
-            graph_json=_graph_dumps(graph_dict),
+            graph_json=_graph_dumps({k: v for k, v in graph_dict.items() if k != "__run_opts__"}),
         )
         db.add(wf)
         await db.flush()
@@ -165,6 +184,81 @@ async def get_run(
     run = await db.get(WorkflowRun, run_id)
     if run is None or run.user_id != user.id:
         raise HTTPException(status_code=404, detail="运行记录不存在")
+    return _run_out(run)
+
+
+@router.get("/runs/{run_id}/events")
+async def stream_run_events(
+    run_id: int,
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """SSE: push WorkflowRunOut snapshots until the run reaches a terminal status."""
+    async with SessionLocal() as db:
+        run = await db.get(WorkflowRun, run_id)
+        if run is None or run.user_id != user.id:
+            raise HTTPException(status_code=404, detail="运行记录不存在")
+
+    async def event_gen():
+        last = ""
+        idle = 0
+        while True:
+            async with SessionLocal() as db:
+                run = await db.get(WorkflowRun, run_id)
+                if run is None:
+                    yield "event: error\ndata: {\"detail\":\"gone\"}\n\n"
+                    return
+                payload = _run_out(run).model_dump(mode="json")
+                blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                terminal = run.status in _TERMINAL
+
+            if blob != last:
+                last = blob
+                idle = 0
+                yield f"event: run\ndata: {blob}\n\n"
+            else:
+                idle += 1
+                if idle % 15 == 0:
+                    yield ": keepalive\n\n"
+
+            if terminal:
+                yield "event: done\ndata: {}\n\n"
+                return
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/runs/{run_id}/cancel", response_model=WorkflowRunOut)
+async def cancel_run(
+    run_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowRunOut:
+    run = await db.get(WorkflowRun, run_id)
+    if run is None or run.user_id != user.id:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    if run.status in (
+        WorkflowRunStatus.SUCCEEDED.value,
+        WorkflowRunStatus.FAILED.value,
+        WorkflowRunStatus.REFUNDED.value,
+        WorkflowRunStatus.CANCELLED.value,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"运行已结束（{run.status}），无法取消",
+        )
+    run.status = WorkflowRunStatus.CANCELLED.value
+    run.error_message = "已取消"
+    await db.commit()
+    await db.refresh(run)
     return _run_out(run)
 
 

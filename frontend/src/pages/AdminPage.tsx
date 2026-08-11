@@ -32,13 +32,14 @@ const PROVIDER_PRESETS: Record<
   },
   mock: {
     label: "mock（本地演示）",
-    hint: "不调上游，返回样例片",
+    hint: "不调上游，生成本地样片（可 trim/mux）；优先级应高于 Agnes",
     provider: "mock",
     base_url: "",
     model_id: "seedance-lite",
     upstream_model: "mock",
     api_key: "mock:demo",
     cost_per_second: 1,
+    priority: 100,
     enabled: true,
   },
   agnes: {
@@ -49,8 +50,9 @@ const PROVIDER_PRESETS: Record<
     model_id: "agnes-pavo",
     upstream_model: "agnes-video-v2.0",
     cost_per_second: 0,
+    priority: 10,
     enabled: false,
-    remark: "免费渠道，超管启用后全站可用",
+    remark: "免费渠道，超管启用后全站可用；优先级低于 mock，避免抢默认模型",
   },
 };
 
@@ -109,6 +111,7 @@ export default function AdminPage() {
       model_id: preset.model_id || prev.model_id,
       upstream_model: preset.upstream_model || prev.upstream_model,
       cost_per_second: preset.cost_per_second ?? prev.cost_per_second,
+      priority: preset.priority ?? prev.priority,
       enabled: preset.enabled ?? prev.enabled,
       remark: preset.remark ?? prev.remark,
       api_key: preset.api_key ?? prev.api_key,

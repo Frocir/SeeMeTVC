@@ -20,7 +20,9 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://seeme:seeme@db:5432/seemetvc
       JWT_SECRET: change-me-in-production
-      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000
+      PUBLIC_ASSET_BASE_URL: http://localhost:5173
+      PUBLIC_API_BASE_URL: http://127.0.0.1:8000
       BOOTSTRAP_ADMIN_EMAIL: admin@example.com
       BOOTSTRAP_ADMIN_PASSWORD: admin123456
       UPLOAD_DIR: /app/data/uploads

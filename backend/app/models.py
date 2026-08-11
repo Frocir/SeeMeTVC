@@ -105,6 +105,7 @@ class WorkflowRunStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     REFUNDED = "refunded"
+    CANCELLED = "cancelled"
 
 
 class Workflow(Base):
