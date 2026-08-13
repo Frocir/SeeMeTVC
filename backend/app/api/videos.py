@@ -10,6 +10,7 @@ from app.deps import get_current_user
 from app.models import Channel, JobStatus, User, VideoJob
 from app.schemas import GenerateIn, JobOut, ParallelQuotaOut
 from app.services import seedance
+from app.services.ledger import KIND_CHARGE, KIND_REFUND, record_entry
 
 router = APIRouter(prefix="/videos", tags=["videos"])
 
@@ -52,12 +53,11 @@ async def _run_job(job_id: int) -> None:
             job.upstream_task_id = task_id
             await db.commit()
 
-            # Poll up to ~3–10 minutes (Agnes slower + 429 backoff)
-            is_agnes = channel.provider.lower() in {"agnes", "pavo", "agnes-pavo"}
-            interval = 12.0 if is_agnes else 5.0
-            polls = 60 if is_agnes else 36
+            interval, polls = seedance.poll_budget(channel)
             for _ in range(polls):
-                status, url = await seedance.poll_generation(channel, task_id)
+                status, url = await seedance.poll_generation(
+                    channel, task_id, user_id=job.user_id
+                )
                 if status == "succeeded":
                     job.status = JobStatus.SUCCEEDED.value
                     job.result_url = url
@@ -74,7 +74,17 @@ async def _run_job(job_id: int) -> None:
         except Exception as exc:  # noqa: BLE001 — surface to job record + refund
             job.status = JobStatus.REFUNDED.value
             job.error_message = str(exc)[:500]
-            user.balance = float(user.balance) + float(job.cost)
+            refund = round(float(job.cost), 4)
+            if refund:
+                await record_entry(
+                    db,
+                    user,
+                    refund,
+                    kind=KIND_REFUND,
+                    title=f"工作室 Job #{job.id} 失败退款",
+                    ref_type="job",
+                    ref_id=job.id,
+                )
             job.balance_after = user.balance
             await db.commit()
 
@@ -121,23 +131,34 @@ async def generate(
     if channel is None:
         raise HTTPException(status_code=400, detail="模型不可用或未配置渠道")
 
-    cost = round(channel.cost_per_second * body.duration_seconds, 4)
+    duration = seedance.clamp_duration_seconds(channel, body.duration_seconds)
+    cost = round(channel.cost_per_second * duration, 4)
     if user.balance < cost:
         raise HTTPException(status_code=402, detail="余额不足")
 
-    user.balance = float(user.balance) - cost
     job = VideoJob(
         user_id=user.id,
         channel_id=channel.id,
         model_id=body.model_id,
         prompt=body.prompt,
         image_url=body.image_url,
-        duration_seconds=body.duration_seconds,
+        duration_seconds=duration,
         status=JobStatus.PENDING.value,
         cost=cost,
         balance_after=user.balance,
     )
     db.add(job)
+    await db.flush()
+    await record_entry(
+        db,
+        user,
+        -cost,
+        kind=KIND_CHARGE,
+        title=f"工作室 Job #{job.id} · {body.model_id}",
+        ref_type="job",
+        ref_id=job.id,
+    )
+    job.balance_after = user.balance
     await db.commit()
     await db.refresh(job)
 

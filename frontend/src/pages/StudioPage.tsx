@@ -168,8 +168,8 @@ export default function StudioPage() {
             <div className="empty-hint" role="status">
               <strong>暂无可用模型</strong>
               <p className="muted">
-                请超管在「超管」页启用渠道。本地演示请启用{" "}
-                <code>Seedance Lite (mock)</code>。
+                请超管在「超管」页对 Seedance Lite / 2.5 填写<strong>火山方舟 ARK_API_KEY</strong>并启用；离线演示可用{" "}
+                <code>本地seedance模拟版</code>。
               </p>
               {me?.role === "super_admin" && (
                 <Link className="linkish" to="/admin">
@@ -182,15 +182,24 @@ export default function StudioPage() {
             模型
             <select
               value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
+              onChange={(e) => {
+                const mid = e.target.value;
+                setModelId(mid);
+                const m = models.find((x) => x.model_id === mid);
+                if (m?.duration_min != null && m?.duration_max != null) {
+                  setDuration((d) => Math.max(m.duration_min!, Math.min(m.duration_max!, d)));
+                }
+              }}
               required
               disabled={models.length === 0}
             >
               {models.length === 0 && <option value="">（无可用模型）</option>}
               {models.map((m) => (
                 <option key={m.model_id} value={m.model_id}>
-                  {m.model_id}
+                  {m.label || m.model_id}
+                  {m.supports_audio ? " · 有声" : ""}
                   {m.provider === "agnes" || m.provider === "pavo" ? " · 免费 Pavo" : ""}
+                  {m.provider === "mock" ? " · 本地模拟" : ""}
                   {" · "}
                   {m.cost_per_second}/{me?.balance_unit || "积分"}/秒
                 </option>
@@ -215,12 +224,34 @@ export default function StudioPage() {
             时长（秒）
             <input
               type="number"
-              min={2}
-              max={30}
+              min={selected?.duration_min ?? 2}
+              max={selected?.duration_max ?? 30}
+              step={1}
               value={duration}
               onChange={(e) => setDuration(Number(e.target.value))}
+              onBlur={() => {
+                const lo = selected?.duration_min ?? 2;
+                const hi = selected?.duration_max ?? 30;
+                setDuration((d) => Math.max(lo, Math.min(hi, d)));
+              }}
             />
           </label>
+          {selected && (
+            <p className="muted" style={{ marginTop: "-0.5rem" }}>
+              有效时长 <strong>{selected.duration_min ?? 2}–{selected.duration_max ?? 30} 秒</strong>
+              {selected.model_id === "seedance-2.5"
+                ? "（方舟 2.x 最短约 4 秒；填更短会按下限生成并计费）"
+                : selected.model_id === "seedance-lite"
+                  ? "（方舟 Lite 约 2–12 秒；超出自动夹紧）"
+                  : selected.provider === "mock"
+                    ? "（本地模拟版）"
+                    : "（超出自动夹紧）"}
+              {selected.supports_audio ? " · 有声" : " · 无原生音频"}
+              {selected.model_id === "seedance-lite" || selected.model_id === "seedance-2.5"
+                ? " · 有参考图走图生，否则文生"
+                : ""}
+            </p>
+          )}
 
           <div className="estimate">
             <span>

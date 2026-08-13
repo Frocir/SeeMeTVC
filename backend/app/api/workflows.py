@@ -8,14 +8,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user
-from app.models import User, Workflow, WorkflowRun, WorkflowRunStatus
+from app.models import ProjectAsset, User, Workflow, WorkflowRun, WorkflowRunStatus
 from app.schemas import (
+    ProjectAssetCopyIn,
+    ProjectAssetCreateIn,
+    ProjectAssetOut,
     WorkflowCreateIn,
     WorkflowOut,
     WorkflowRunCreateIn,
     WorkflowRunOut,
     WorkflowUpdateIn,
 )
+from app.services.project_assets import (
+    brand_from_graph,
+    collect_upload_paths,
+    copy_asset,
+    last_image_from_graph,
+    latest_image_url,
+    refresh_cover,
+    sync_from_graph,
+    upsert_asset,
+)
+from app.services.run_preflight import cannot_run_reason
 from app.services.workflow_exec import execute_run
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -33,14 +47,17 @@ def _graph_dumps(graph: dict | None) -> str:
     return json.dumps(graph or {"nodes": [], "edges": []}, ensure_ascii=False)
 
 
-def _workflow_out(wf: Workflow) -> WorkflowOut:
+def _workflow_out(wf: Workflow, thumb: str | None = None) -> WorkflowOut:
     try:
         graph = json.loads(wf.graph_json or "{}")
     except json.JSONDecodeError:
         graph = {"nodes": [], "edges": []}
+    cover = wf.cover_url or thumb or last_image_from_graph(wf.graph_json)
     return WorkflowOut(
         id=wf.id,
         name=wf.name,
+        brand=wf.brand or "SeeMe",
+        cover_url=cover,
         graph=graph,
         created_at=wf.created_at,
         updated_at=wf.updated_at,
@@ -79,7 +96,14 @@ async def list_workflows(
     result = await db.execute(
         select(Workflow).where(Workflow.user_id == user.id).order_by(Workflow.id.desc())
     )
-    return [_workflow_out(w) for w in result.scalars().all()]
+    wfs = result.scalars().all()
+    thumbs: dict[int, str] = {}
+    need = [w.id for w in wfs if not w.cover_url]
+    for wid in need:
+        url = await latest_image_url(db, wid)
+        if url:
+            thumbs[wid] = url
+    return [_workflow_out(w, thumb=thumbs.get(w.id)) for w in wfs]
 
 
 @router.post("", response_model=WorkflowOut)
@@ -89,8 +113,18 @@ async def create_workflow(
     db: AsyncSession = Depends(get_db),
 ) -> WorkflowOut:
     graph = body.graph.model_dump() if body.graph else {"nodes": [], "edges": []}
-    wf = Workflow(user_id=user.id, name=body.name or "未命名工作流", graph_json=_graph_dumps(graph))
+    brand = (body.brand or "").strip() or brand_from_graph(_graph_dumps(graph))
+    wf = Workflow(
+        user_id=user.id,
+        name=body.name or "未命名项目",
+        brand=brand,
+        graph_json=_graph_dumps(graph),
+    )
     db.add(wf)
+    await db.commit()
+    await db.refresh(wf)
+    await sync_from_graph(db, wf)
+    await refresh_cover(db, wf)
     await db.commit()
     await db.refresh(wf)
     return _workflow_out(wf)
@@ -112,19 +146,21 @@ async def start_run(
     elif workflow_id is not None:
         wf = await db.get(Workflow, workflow_id)
         if wf is None or wf.user_id != user.id:
-            raise HTTPException(status_code=404, detail="工作流不存在")
+            raise HTTPException(status_code=404, detail="项目不存在")
         try:
             graph_dict = json.loads(wf.graph_json or "{}")
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="工作流图损坏") from exc
+            raise HTTPException(status_code=400, detail="项目画布数据损坏，请保存后重试") from exc
         if body.name and wf.name != body.name:
             wf.name = body.name
     else:
-        raise HTTPException(status_code=400, detail="请提供 workflow_id 或 graph")
+        raise HTTPException(status_code=400, detail="请提供项目或画布数据")
+    if graph_dict is None:
+        raise HTTPException(status_code=400, detail="请提供项目或画布数据")
 
-    nodes = graph_dict.get("nodes") or []
-    if not nodes:
-        raise HTTPException(status_code=400, detail="工作流图为空")
+    reason = cannot_run_reason(graph_dict, target_ids=list(body.target_ids or []))
+    if reason:
+        raise HTTPException(status_code=400, detail=reason)
 
     if body.target_ids:
         graph_dict = {
@@ -259,7 +295,12 @@ async def cancel_run(
     run.error_message = "已取消"
     await db.commit()
     await db.refresh(run)
-    return _run_out(run)
+    payload = _run_out(run)
+    from app.services.project_assets import delete_ephemeral_run
+
+    await delete_ephemeral_run(db, run)
+    await db.commit()
+    return payload
 
 
 @router.get("/{workflow_id}", response_model=WorkflowOut)
@@ -270,8 +311,9 @@ async def get_workflow(
 ) -> WorkflowOut:
     wf = await db.get(Workflow, workflow_id)
     if wf is None or wf.user_id != user.id:
-        raise HTTPException(status_code=404, detail="工作流不存在")
-    return _workflow_out(wf)
+        raise HTTPException(status_code=404, detail="项目不存在")
+    thumb = None if wf.cover_url else await latest_image_url(db, wf.id)
+    return _workflow_out(wf, thumb=thumb)
 
 
 @router.patch("/{workflow_id}", response_model=WorkflowOut)
@@ -283,11 +325,17 @@ async def update_workflow(
 ) -> WorkflowOut:
     wf = await db.get(Workflow, workflow_id)
     if wf is None or wf.user_id != user.id:
-        raise HTTPException(status_code=404, detail="工作流不存在")
+        raise HTTPException(status_code=404, detail="项目不存在")
     if body.name is not None:
         wf.name = body.name
+    if body.brand is not None:
+        wf.brand = body.brand.strip() or wf.brand
     if body.graph is not None:
         wf.graph_json = _graph_dumps(body.graph.model_dump())
+        if not (body.brand or "").strip():
+            wf.brand = brand_from_graph(wf.graph_json)
+        await sync_from_graph(db, wf)
+        await refresh_cover(db, wf)
     await db.commit()
     await db.refresh(wf)
     return _workflow_out(wf)
@@ -301,7 +349,131 @@ async def delete_workflow(
 ) -> dict:
     wf = await db.get(Workflow, workflow_id)
     if wf is None or wf.user_id != user.id:
-        raise HTTPException(status_code=404, detail="工作流不存在")
+        raise HTTPException(status_code=404, detail="项目不存在")
+    urls = [wf.cover_url]
+    assets = (
+        await db.execute(select(ProjectAsset).where(ProjectAsset.workflow_id == wf.id))
+    ).scalars().all()
+    urls.extend(a.url for a in assets)
+    runs = (
+        await db.execute(select(WorkflowRun).where(WorkflowRun.workflow_id == wf.id))
+    ).scalars().all()
+    for run in runs:
+        urls.append(run.result_url)
+        await db.delete(run)
+    for asset in assets:
+        await db.delete(asset)
     await db.delete(wf)
     await db.commit()
+    for path in collect_upload_paths(*urls):
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
     return {"ok": True}
+
+
+def _asset_out(row: ProjectAsset) -> ProjectAssetOut:
+    return ProjectAssetOut(
+        id=row.id,
+        workflow_id=row.workflow_id,
+        kind=row.kind,
+        url=row.url,
+        filename=row.filename,
+        created_at=row.created_at,
+    )
+
+
+async def _owned_workflow(workflow_id: int, user: User, db: AsyncSession) -> Workflow:
+    wf = await db.get(Workflow, workflow_id)
+    if wf is None or wf.user_id != user.id:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return wf
+
+
+@router.get("/{workflow_id}/assets", response_model=list[ProjectAssetOut])
+async def list_assets(
+    workflow_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    kind: str | None = None,
+) -> list[ProjectAssetOut]:
+    await _owned_workflow(workflow_id, user, db)
+    stmt = select(ProjectAsset).where(ProjectAsset.workflow_id == workflow_id)
+    if kind in {"image", "video", "output"}:
+        stmt = stmt.where(ProjectAsset.kind == kind)
+    stmt = stmt.order_by(ProjectAsset.id.desc())
+    rows = (await db.execute(stmt)).scalars().all()
+    return [_asset_out(r) for r in rows]
+
+
+@router.post("/{workflow_id}/assets", response_model=ProjectAssetOut)
+async def add_asset(
+    workflow_id: int,
+    body: ProjectAssetCreateIn,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectAssetOut:
+    wf = await _owned_workflow(workflow_id, user, db)
+    kind = body.kind if body.kind in {"image", "video"} else None
+    row = await upsert_asset(
+        db,
+        workflow_id=wf.id,
+        user_id=user.id,
+        url=body.url,
+        kind=kind,
+        filename=body.filename,
+    )
+    if row is None:
+        raise HTTPException(status_code=400, detail="无效素材地址")
+    await refresh_cover(db, wf)
+    await db.commit()
+    await db.refresh(row)
+    return _asset_out(row)
+
+
+@router.post("/{workflow_id}/assets/{asset_id}/copy", response_model=ProjectAssetOut)
+async def copy_asset_to_project(
+    workflow_id: int,
+    asset_id: int,
+    body: ProjectAssetCopyIn,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectAssetOut:
+    await _owned_workflow(workflow_id, user, db)
+    src = await db.get(ProjectAsset, asset_id)
+    if src is None or src.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    target = await _owned_workflow(body.target_workflow_id, user, db)
+    if target.id == workflow_id:
+        raise HTTPException(status_code=400, detail="请选择其他项目")
+    row = await copy_asset(db, src, target)
+    await refresh_cover(db, target)
+    await db.commit()
+    await db.refresh(row)
+    return _asset_out(row)
+
+
+@router.delete("/{workflow_id}/assets/{asset_id}")
+async def delete_asset(
+    workflow_id: int,
+    asset_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _owned_workflow(workflow_id, user, db)
+    row = await db.get(ProjectAsset, asset_id)
+    if row is None or row.workflow_id != workflow_id:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    url = row.url
+    await db.delete(row)
+    await db.commit()
+    for path in collect_upload_paths(url):
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+    return {"ok": True}
+

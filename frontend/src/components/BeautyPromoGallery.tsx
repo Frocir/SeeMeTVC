@@ -50,7 +50,7 @@ export default function BeautyPromoGallery({
             type="button"
             className="promo-card"
             onClick={() => onPick?.(p)}
-            title={onPick ? "点击填入工作室提示词" : p.title}
+            title={onPick ? "点击后新建项目并写入 Brief" : p.title}
           >
             <img src={p.image} alt={p.title} loading="lazy" />
             <div className="promo-card-body">

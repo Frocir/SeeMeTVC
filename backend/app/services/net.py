@@ -49,7 +49,7 @@ def _parse_proxy(url: str) -> tuple[str, str, int] | None:
     if "://" not in raw:
         raw = "http://" + raw
     parsed = urlparse(raw)
-    host = parsed.hostname or "127.0.0.1"
+    host = parsed.hostname or os.environ.get("LOCAL_PROXY_HOST", "127.0.0.1")
     if parsed.port is None:
         return None
     scheme = (parsed.scheme or "http").lower()
@@ -120,16 +120,18 @@ def _detect_proxy_plan_uncached() -> ProxyPlan:
             f"env HTTP proxy {host}:{port}",
         )
 
+    probe_host = os.environ.get("LOCAL_PROXY_HOST", "127.0.0.1")
+
     for port in _COMMON_SOCKS_PORTS:
-        if not _tcp_open("127.0.0.1", port):
+        if not _tcp_open(probe_host, port):
             continue
         if _socksio_available():
-            return ProxyPlan("socks", f"socks5://127.0.0.1:{port}", f"local SOCKS open on :{port}")
-        return ProxyPlan("http", f"http://127.0.0.1:{port}", f"local proxy :{port} (HTTP fallback)")
+            return ProxyPlan("socks", f"socks5://{probe_host}:{port}", f"local SOCKS open on :{port}")
+        return ProxyPlan("http", f"http://{probe_host}:{port}", f"local proxy :{port} (HTTP fallback)")
 
     for port in _COMMON_HTTP_PORTS:
-        if _tcp_open("127.0.0.1", port):
-            return ProxyPlan("http", f"http://127.0.0.1:{port}", f"local HTTP proxy open on :{port}")
+        if _tcp_open(probe_host, port):
+            return ProxyPlan("http", f"http://{probe_host}:{port}", f"local HTTP proxy open on :{port}")
 
     return ProxyPlan("direct", None, "no local proxy detected; domestic direct")
 

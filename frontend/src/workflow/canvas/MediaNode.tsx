@@ -164,7 +164,7 @@ export function MediaNode({ data, selected }: NodeProps<Node<MediaNodeData>>) {
           }}
         >
           {media.kind === "video" && media.url ? (
-            <video src={media.url} muted playsInline controls onClick={(e) => e.stopPropagation()} />
+            <video src={media.url} playsInline controls onClick={(e) => e.stopPropagation()} />
           ) : media.kind === "image" && media.url ? (
             <img src={media.url} alt="" />
           ) : (

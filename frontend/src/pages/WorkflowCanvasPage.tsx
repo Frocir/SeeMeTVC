@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Background,
   BackgroundVariant,
@@ -38,12 +38,13 @@ import {
 } from "../workflow/queue";
 import type { WfData, WfNodeType } from "../workflow/types";
 import { isExitNodeType, normalizeNodeType } from "../workflow/types";
+import { cannotRunReason } from "../workflow/runBlockers";
 import WfInspector from "../workflow/WfInspector";
+import ProjectAssetPanel from "../workflow/ProjectAssetPanel";
 import {
   PALETTE,
   WF_TEMPLATES,
   defaultData,
-  defaultGraph,
   type WfTemplateId,
 } from "../workflow/templates";
 
@@ -76,10 +77,12 @@ function applyMediaFromOutput(data: WfData, output?: Record<string, unknown> | n
 export default function WorkflowCanvasPage() {
   const { me, refresh } = useAuth();
   const isAdmin = me?.role === "super_admin";
+  const { workflowId: idParam } = useParams();
+  const navigate = useNavigate();
+  const routeId = Number(idParam);
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [name, setName] = useState("美妆 TVC 画布");
+  const [name, setName] = useState("未命名项目");
   const [workflowId, setWorkflowId] = useState<number | null>(null);
-  const [savedList, setSavedList] = useState<Workflow[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [run, setRun] = useState<WorkflowRun | null>(null);
@@ -87,6 +90,8 @@ export default function WorkflowCanvasPage() {
   const [activeTemplate, setActiveTemplate] = useState<WfTemplateId>("beauty_linear");
   const [flowKey, setFlowKey] = useState(0);
   const [leftOpen, setLeftOpen] = useState(true);
+  const [leftTab, setLeftTab] = useState<"nodes" | "assets">("nodes");
+  const [assetTick, setAssetTick] = useState(0);
   const [rightOpen, setRightOpen] = useState(true);
   const [fullscreen, setFullscreen] = useState<{ url: string; kind: "image" | "video" } | null>(
     null,
@@ -105,33 +110,36 @@ export default function WorkflowCanvasPage() {
   const lastSimulatedRunId = useRef<number | null>(null);
 
   const modelId = models[0]?.model_id || "";
-  const seed = useMemo(() => defaultGraph(modelId), [modelId]);
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node<WfData>>(seed.nodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(seed.edges);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<WfData>>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
-    void Promise.all([
-      api<ModelOption[]>("/api/models"),
-      api<Workflow[]>("/api/workflows"),
-    ]).then(([m, wfs]) => {
-      setModels(m);
-      setSavedList(wfs);
-      const mid = m[0]?.model_id || "";
-      if (!workflowId) {
-        const g = defaultGraph(mid);
+    if (!Number.isFinite(routeId) || routeId <= 0) {
+      navigate("/", { replace: true });
+      return;
+    }
+    void Promise.all([api<ModelOption[]>("/api/models"), api<Workflow>(`/api/workflows/${routeId}`)])
+      .then(([m, wf]) => {
+        setModels(m);
+        const mid = m[0]?.model_id || "";
+        setWorkflowId(wf.id);
+        setName(wf.name);
+        const g = fromApiGraph(wf.graph, mid);
         setNodes(g.nodes);
         setEdges(g.edges);
+        setFlowKey((k) => k + 1);
+        fingerprints.current = {};
         for (const n of g.nodes) {
           if (isExitNodeType(n.data.nodeType)) {
             fingerprints.current[n.id] = inputFingerprint(n.id, g.nodes, g.edges);
           }
         }
         autoArmed.current = true;
-      }
-    });
+      })
+      .catch(() => navigate("/", { replace: true }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [routeId]);
 
   const selected = useMemo(
     () => nodes.find((n) => n.id === selectedId) ?? null,
@@ -186,7 +194,6 @@ export default function WorkflowCanvasPage() {
     setActiveTemplate(id);
     setSelectedId(null);
     setRun(null);
-    setName(tpl.name);
     fingerprints.current = {};
     for (const n of g.nodes) {
       if (isExitNodeType(n.data.nodeType)) {
@@ -198,7 +205,7 @@ export default function WorkflowCanvasPage() {
     setFlowKey((k) => k + 1);
   }
 
-  function addNode(type: WfNodeType) {
+  function addNode(type: WfNodeType, extra?: Partial<WfData>) {
     const id = `n${Date.now()}-${idSeq.current++}`;
     setNodes((ns) => [
       ...ns,
@@ -206,7 +213,7 @@ export default function WorkflowCanvasPage() {
         id,
         type: "media",
         position: { x: 180 + (ns.length % 5) * 48, y: 120 + (ns.length % 4) * 48 },
-        data: defaultData(type, modelId),
+        data: { ...defaultData(type, modelId), ...extra },
       },
     ]);
     setSelectedId(id);
@@ -292,6 +299,12 @@ export default function WorkflowCanvasPage() {
   }
 
   async function startRun(targetIds?: string[], note?: string) {
+    const blocked = cannotRunReason(nodes, { modelId, targetIds });
+    if (blocked) {
+      setError(blocked);
+      setQueueNote("无法生成");
+      return;
+    }
     if (runningRef.current) {
       setQueueNote("队列忙碌：已有任务在执行");
       return;
@@ -299,7 +312,7 @@ export default function WorkflowCanvasPage() {
     setBusy(true);
     setError("");
     setSimulate(null);
-    setQueueNote(note || (targetIds ? `队列：运行 ${targetIds.length} 个节点` : "队列：一键跑模板"));
+    setQueueNote(note || (targetIds ? `队列：运行 ${targetIds.length} 个节点` : "队列：一键跑"));
     runningRef.current = true;
     // Full template / manual runs: pause auto-queue so it cannot open a 2nd Agnes poller
     suppressAutoUntil.current = Date.now() + (targetIds ? 15_000 : 120_000);
@@ -341,47 +354,18 @@ export default function WorkflowCanvasPage() {
     setError("");
     try {
       const graph = toApiGraph(nodes, edges);
-      if (workflowId) {
-        const wf = await api<Workflow>(`/api/workflows/${workflowId}`, {
-          method: "PATCH",
-          body: JSON.stringify({ name, graph }),
-        });
-        setWorkflowId(wf.id);
-      } else {
-        const wf = await api<Workflow>("/api/workflows", {
-          method: "POST",
-          body: JSON.stringify({ name, graph }),
-        });
-        setWorkflowId(wf.id);
-      }
-      setSavedList(await api<Workflow[]>("/api/workflows"));
+      if (!workflowId) throw new Error("项目尚未打开");
+      const wf = await api<Workflow>(`/api/workflows/${workflowId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name, graph }),
+      });
+      setWorkflowId(wf.id);
+      setName(wf.name);
+      setAssetTick((n) => n + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function loadWorkflow(id: number) {
-    setError("");
-    try {
-      const wf = await api<Workflow>(`/api/workflows/${id}`);
-      setWorkflowId(wf.id);
-      setName(wf.name);
-      const g = fromApiGraph(wf.graph, modelId);
-      setNodes(g.nodes);
-      setEdges(g.edges);
-      setRun(null);
-      setSelectedId(null);
-      fingerprints.current = {};
-      for (const n of g.nodes) {
-        if (isExitNodeType(n.data.nodeType)) {
-          fingerprints.current[n.id] = inputFingerprint(n.id, g.nodes, g.edges);
-        }
-      }
-      autoArmed.current = true;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "加载失败");
     }
   }
 
@@ -420,6 +404,7 @@ export default function WorkflowCanvasPage() {
       if (isTerminalRun(fresh.status)) {
         runningRef.current = false;
         await refresh();
+        if (fresh.status === "succeeded") setAssetTick((n) => n + 1);
       }
     });
     return () => stop();
@@ -493,12 +478,18 @@ export default function WorkflowCanvasPage() {
     }
   }
 
+  const runBlock = useMemo(
+    () => cannotRunReason(nodes, { modelId }),
+    [nodes, modelId],
+  );
+
   const selectedCanGenerate =
     !!selected &&
     (isExitNodeType(selected.data.nodeType) ||
       normalizeNodeType(selected.data.nodeType) === "TextAsset");
 
   return (
+    <div className="canvas-app">
     <div className={`cv-stage ${leftOpen ? "left-open" : "left-collapsed"} ${rightOpen ? "right-open" : "right-collapsed"}`}>
       <section className="cv-canvas">
         <ReactFlow
@@ -548,7 +539,9 @@ export default function WorkflowCanvasPage() {
 
       {/* Floating top status strip */}
       <div className="cv-topbar">
-        <div className="cv-topbar-brand">画布</div>
+        <Link to="/" className="cv-chip-btn">
+          ← 工作区
+        </Link>
         <input
           className="cv-topbar-name"
           value={name}
@@ -557,7 +550,7 @@ export default function WorkflowCanvasPage() {
         />
         <div className="cv-topbar-queue">
           {run && isActiveRun(run.status)
-            ? `${STATUS_LABEL[run.status] || run.status} · #${run.id}`
+            ? STATUS_LABEL[run.status] || run.status
             : queueNote || "队列空闲"}
         </div>
         <div className="cv-topbar-actions">
@@ -572,26 +565,25 @@ export default function WorkflowCanvasPage() {
           <button
             type="button"
             className="cv-chip-btn primary"
-            disabled={busy || !modelId || (!!run && isActiveRun(run.status))}
-            title={!modelId ? "暂无可用模型，请先在超管启用渠道" : undefined}
-            onClick={() => void startRun(undefined, "一键跑模板")}
+            disabled={busy || !!runBlock || (!!run && isActiveRun(run.status))}
+            title={runBlock || undefined}
+            onClick={() => void startRun(undefined, "一键跑")}
           >
             一键跑
           </button>
         </div>
       </div>
 
-      {!modelId && (
-        <div className="cv-model-empty" role="status">
-          <strong>暂无可用模型</strong>
+      {(runBlock || error) && (
+        <div className="cv-model-empty" role="alert">
+          <strong>无法生成</strong>
           <span>
-            图生视频无法运行。请超管启用渠道（本地优先 mock）
-            {isAdmin ? (
+            {error || runBlock}
+            {!modelId && isAdmin && (
               <>
-                ，或打开 <Link to="/admin">超管</Link>
+                {" "}
+                打开 <Link to="/admin">超管</Link>
               </>
-            ) : (
-              "。"
             )}
           </span>
         </div>
@@ -603,8 +595,8 @@ export default function WorkflowCanvasPage() {
           <>
             <div className="cv-dock-head">
               <div>
-                <p className="eyebrow">工具箱</p>
-                <strong>添加与模板</strong>
+                <p className="eyebrow">项目</p>
+                <strong>{leftTab === "assets" ? "素材" : "节点"}</strong>
               </div>
               <button
                 type="button"
@@ -616,7 +608,25 @@ export default function WorkflowCanvasPage() {
                 ‹
               </button>
             </div>
+            <div className="cv-dock-tabs">
+              <button
+                type="button"
+                className={leftTab === "nodes" ? "active" : ""}
+                onClick={() => setLeftTab("nodes")}
+              >
+                节点
+              </button>
+              <button
+                type="button"
+                className={leftTab === "assets" ? "active" : ""}
+                onClick={() => setLeftTab("assets")}
+              >
+                素材
+              </button>
+            </div>
             <div className="cv-dock-scroll">
+              {leftTab === "nodes" ? (
+                <>
               <div className="cv-section">
                 <p className="eyebrow">模板</p>
                 <div className="cv-templates">
@@ -644,28 +654,33 @@ export default function WorkflowCanvasPage() {
                   ))}
                 </div>
               </div>
-              {savedList.length > 0 && (
-                <div className="cv-section">
-                  <p className="eyebrow">草稿</p>
-                  <div className="cv-saved">
-                    {savedList.slice(0, 6).map((w) => (
-                      <button
-                        key={w.id}
-                        type="button"
-                        className="cv-draft"
-                        onClick={() => void loadWorkflow(w.id)}
-                      >
-                        {w.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                </>
+              ) : workflowId ? (
+                <ProjectAssetPanel
+                  workflowId={workflowId}
+                  reloadKey={assetTick}
+                  onPlace={(type, url, label) => {
+                    if (type === "ImageAsset") {
+                      addNode("ImageAsset", { image_url: url, label });
+                    } else {
+                      addNode("VideoAsset", {
+                        clip_url: url,
+                        result_url: url,
+                        preview_url: url,
+                        label,
+                      });
+                    }
+                    setLeftTab("nodes");
+                  }}
+                />
+              ) : (
+                <p className="muted">项目尚未打开</p>
               )}
               {error && <p className="error">{error}</p>}
-              {run && (
+              {run && isActiveRun(run.status) && (
                 <div className="cv-run">
                   <p>
-                    #{run.id} · <strong>{STATUS_LABEL[run.status] || run.status}</strong>
+                    <strong>{STATUS_LABEL[run.status] || run.status}</strong>
                     {run.cost > 0 && <> · {run.cost.toFixed(2)}</>}
                   </p>
                   {run.error_message && <p className="error">{run.error_message}</p>}
@@ -764,6 +779,7 @@ export default function WorkflowCanvasPage() {
         onClose={() => setSimulate(null)}
         onApply={applySimulate}
       />
+    </div>
     </div>
   );
 }

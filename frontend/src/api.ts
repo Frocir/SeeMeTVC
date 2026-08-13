@@ -1,5 +1,12 @@
 const TOKEN_KEY = "seemetvc_token";
 
+/** Same-origin by default (`/api` via Vite proxy or nginx). Split deploy: set VITE_API_BASE. */
+export function apiUrl(path: string): string {
+  const base = String(import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${p}`;
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -17,7 +24,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const res = await fetch(path, { ...init, headers });
+  const res = await fetch(apiUrl(path), { ...init, headers });
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -26,7 +33,11 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     } catch {
       /* ignore */
     }
-    throw new Error(typeof detail === "string" ? detail : "请求失败");
+    const err = new Error(typeof detail === "string" ? detail : "请求失败") as Error & {
+      status: number;
+    };
+    err.status = res.status;
+    throw err;
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -46,6 +57,11 @@ export type ModelOption = {
   model_id: string;
   cost_per_second: number;
   provider: string;
+  label?: string;
+  duration_min?: number;
+  duration_max?: number;
+  supports_audio?: boolean;
+  supports_image?: boolean;
 };
 
 export type Job = {
@@ -69,6 +85,7 @@ export type ParallelQuota = {
 };
 
 export const STATUS_LABEL: Record<string, string> = {
+  draft: "未出片",
   pending: "排队中",
   running: "生成中",
   succeeded: "已完成",
@@ -118,10 +135,47 @@ export type WorkflowGraph = {
 export type Workflow = {
   id: number;
   name: string;
+  brand?: string;
+  cover_url?: string | null;
   graph: WorkflowGraph;
   created_at: string;
   updated_at: string;
 };
+
+export type ProjectAsset = {
+  id: number;
+  workflow_id: number;
+  kind: "image" | "video" | "output" | string;
+  url: string;
+  filename: string;
+  created_at: string;
+};
+
+export type UploadOut = {
+  url: string;
+  filename: string;
+  size: number;
+};
+
+export async function uploadFile(path: string, file: File): Promise<UploadOut> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(apiUrl(path), { method: "POST", headers, body });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = data.detail || JSON.stringify(data);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(typeof detail === "string" ? detail : "上传失败");
+  }
+  return res.json();
+}
 
 export type WorkflowNodeState = {
   status: string;
@@ -143,6 +197,17 @@ export type WorkflowRun = {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type BalanceEntry = {
+  id: number;
+  amount: number;
+  balance_after: number;
+  kind: string;
+  title: string;
+  ref_type: string;
+  ref_id: number | null;
+  created_at: string;
 };
 
 export function isActiveRun(status: string) {
@@ -178,6 +243,22 @@ function sleep(ms: number, signal?: AbortSignal) {
   });
 }
 
+function goneRun(runId: number): WorkflowRun {
+  return {
+    id: runId,
+    workflow_id: null,
+    status: "cancelled",
+    graph: { nodes: [], edges: [] },
+    node_states: {},
+    cost: 0,
+    balance_after: null,
+    result_url: null,
+    error_message: null,
+    created_at: "",
+    updated_at: "",
+  };
+}
+
 /** Subscribe to workflow run progress via SSE; poll until terminal if SSE fails or ends early. */
 export function subscribeWorkflowRun(
   runId: number,
@@ -198,9 +279,16 @@ export function subscribeWorkflowRun(
 
   const pollUntilDone = async () => {
     while (!closed) {
-      const fresh = await api<WorkflowRun>(`/api/workflows/runs/${runId}`);
-      await onUpdate(fresh);
-      if (isTerminalRun(fresh.status)) {
+      try {
+        const fresh = await api<WorkflowRun>(`/api/workflows/runs/${runId}`);
+        await onUpdate(fresh);
+        if (isTerminalRun(fresh.status)) {
+          stop();
+          return;
+        }
+      } catch (e) {
+        const status = (e as Error & { status?: number }).status;
+        if (status === 404) await onUpdate(goneRun(runId));
         stop();
         return;
       }
@@ -211,7 +299,7 @@ export function subscribeWorkflowRun(
   void (async () => {
     const token = getToken();
     try {
-      const res = await fetch(`/api/workflows/runs/${runId}/events`, {
+      const res = await fetch(apiUrl(`/api/workflows/runs/${runId}/events`), {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         signal: ctrl.signal,
       });
@@ -237,6 +325,11 @@ export function subscribeWorkflowRun(
           }
           if (!dataLines.length) continue;
           if (event === "done") {
+            stop();
+            return;
+          }
+          if (event === "error") {
+            await onUpdate(goneRun(runId));
             stop();
             return;
           }
@@ -275,7 +368,7 @@ export async function uploadVideo(file: File): Promise<UploadImageResult> {
   const headers = new Headers();
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch("/api/uploads/videos", { method: "POST", headers, body });
+  const res = await fetch(apiUrl("/api/uploads/videos"), { method: "POST", headers, body });
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -302,7 +395,7 @@ export async function uploadImage(file: File): Promise<UploadImageResult> {
   const headers = new Headers();
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch("/api/uploads/images", { method: "POST", headers, body });
+  const res = await fetch(apiUrl("/api/uploads/images"), { method: "POST", headers, body });
   if (!res.ok) {
     let detail = res.statusText;
     try {

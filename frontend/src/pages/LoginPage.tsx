@@ -8,9 +8,9 @@ const heroTiles = BEAUTY_PROMOS.slice(0, 3);
 export default function LoginPage() {
   const { me, login, register } = useAuth();
   const [mode, setMode] = useState<"login" | "register">("login");
-  // Dev convenience: prefill bootstrap admin (keep for local iteration).
-  const [email, setEmail] = useState("admin@example.com");
-  const [password, setPassword] = useState("admin123456");
+  const demo = typeof __DEV_LOGIN__ !== "undefined" ? __DEV_LOGIN__ : { email: "", password: "" };
+  const [email, setEmail] = useState(demo.email);
+  const [password, setPassword] = useState(demo.password);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,14 +46,14 @@ export default function LoginPage() {
             <p className="eyebrow">面部美妆 · TVC 成片</p>
             <h1 className="brand-mark">为美妆品牌拍出能上线的广告片</h1>
             <p className="lead">
-              唇釉微距、底妆贴合、精华光感——面向面部美妆垂类的轻度 Seedance 工作室，素材即点即拍。
+              唇釉微距、底妆贴合、精华光感——面向面部美妆垂类。项目里编排成片，余额清晰。
             </p>
           </div>
         </div>
 
         <div className="auth-panel">
-          <h1>{mode === "login" ? "进入美妆工作室" : "创建品牌账号"}</h1>
-          <p className="muted">并行生成广告片 · 回看历史成片 · 余额清晰</p>
+          <h1>{mode === "login" ? "进入工作区" : "创建品牌账号"}</h1>
+          <p className="muted">项目编排 · 成片回看 · 余额清晰</p>
           <form onSubmit={onSubmit}>
             {mode === "register" && (
               <label>
@@ -94,8 +94,8 @@ export default function LoginPage() {
           >
             {mode === "login" ? "没有账号？注册" : "已有账号？登录"}
           </button>
-          {mode === "login" && (
-            <p className="auth-demo-hint muted">开发阶段已预填本地超管账号，上线前请去掉。</p>
+          {mode === "login" && demo.email && (
+            <p className="auth-demo-hint muted">开发阶段已预填本地超管账号（来自仓库根目录 .env）。</p>
           )}
         </div>
       </div>

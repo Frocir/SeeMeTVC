@@ -6,14 +6,32 @@ from app.db import get_db
 from app.deps import require_super_admin
 from app.models import Channel, User
 from app.schemas import ChannelCreate, ChannelOut, ChannelUpdate, ModelOptionOut
+from app.services import seedance
 
 router = APIRouter(tags=["channels"])
 
 
 def _mask_key(key: str) -> str:
-    if len(key) <= 8:
+    k = (key or "").strip()
+    if not k:
+        return "未设置"
+    if len(k) <= 8:
         return "***"
-    return f"{key[:4]}***{key[-4:]}"
+    return f"{k[:4]}***{k[-4:]}"
+
+
+def _model_meta(ch: Channel) -> tuple[int, int, bool, bool]:
+    """duration_min, duration_max, supports_audio, supports_image."""
+    if ch.provider == "mock" or (ch.api_key or "").startswith("mock:"):
+        return 1, 15, True, True
+    if ch.provider.lower() in {"agnes", "pavo", "agnes-pavo"}:
+        return 2, 18, False, True
+    family = seedance.fal_family(ch)
+    if family == "seedance-2.5":
+        return 4, 30, True, True
+    if family == "seedance-lite":
+        return 2, 12, False, True
+    return 2, 30, False, True
 
 
 def to_channel_out(ch: Channel) -> ChannelOut:
@@ -46,11 +64,17 @@ async def list_enabled_models(db: AsyncSession = Depends(get_db)) -> list[ModelO
         if ch.model_id in seen:
             continue
         seen.add(ch.model_id)
+        dmin, dmax, audio, image = _model_meta(ch)
         out.append(
             ModelOptionOut(
                 model_id=ch.model_id,
                 cost_per_second=ch.cost_per_second,
                 provider=ch.provider,
+                label=ch.name or ch.model_id,
+                duration_min=dmin,
+                duration_max=dmax,
+                supports_audio=audio,
+                supports_image=image,
             )
         )
     return out

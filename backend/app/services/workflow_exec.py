@@ -11,8 +11,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal
-from app.models import Channel, User, WorkflowRun, WorkflowRunStatus
+from app.models import Channel, User, Workflow, WorkflowRun, WorkflowRunStatus
 from app.services import media_ops, seedance
+from app.services.ledger import KIND_CHARGE, KIND_REFUND, record_entry
+from app.services.project_assets import (
+    delete_ephemeral_run,
+    is_video_url,
+    prune_runs_keep_current,
+    refresh_cover,
+    replace_output,
+    sync_from_graph,
+    upsert_asset,
+)
 
 LEGACY_TO_FREE = {
     "BriefInput": "TextAsset",
@@ -79,7 +89,7 @@ def topological_order(nodes: list[dict], edges: list[dict]) -> list[str]:
                 q.append(v)
 
     if len(order) != len(ids):
-        raise WorkflowExecError("工作流图存在环或无效依赖，无法执行")
+        raise WorkflowExecError("节点图存在环或无效依赖，无法执行")
     return order
 
 
@@ -427,6 +437,7 @@ def _exec_makeup(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
 async def _run_shot(
     db: AsyncSession,
     user: User,
+    run: WorkflowRun,
     ctx: dict[str, Any],
     data: dict,
     charged: list[float],
@@ -434,15 +445,17 @@ async def _run_shot(
 ) -> dict[str, Any]:
     model_id = data.get("model_id") or ctx.get("model_id")
     if not model_id:
-        raise WorkflowExecError("ShotGenerate 缺少 model_id")
+        raise WorkflowExecError("图生视频缺少模型（model_id）")
 
-    duration = int(data.get("duration_seconds") or ctx.get("duration_seconds") or 5)
-    duration = max(2, min(duration, 30))
     image_url = data.get("image_url") or ctx.get("image_url")
 
     channel = await _pick_channel(db, str(model_id))
     if channel is None:
         raise WorkflowExecError(f"模型不可用：{model_id}")
+
+    duration = seedance.clamp_duration_seconds(
+        channel, int(data.get("duration_seconds") or ctx.get("duration_seconds") or 5)
+    )
 
     scenes = ctx.get("scenes") if isinstance(ctx.get("scenes"), list) else None
     prompts: list[str]
@@ -453,7 +466,9 @@ async def _run_shot(
 
     prompts = [p for p in prompts if p.strip()]
     if not prompts:
-        raise WorkflowExecError("ShotGenerate 缺少有效提示词")
+        raise WorkflowExecError(
+            "图生视频缺少有效提示词：请在节点填写「镜头提示词」，或把文本接到 prompt 槽"
+        )
 
     # Cap parallel shots in one node (Agnes RPM / cost); sequential for stability
     max_shots = int(data.get("max_shots") or 1)
@@ -461,6 +476,8 @@ async def _run_shot(
 
     clips: list[str] = []
     node_cost = 0.0
+    is_agnes = channel.provider.lower() in {"agnes", "pavo", "agnes-pavo"}
+    interval, polls = seedance.poll_budget(channel)
 
     for prompt in prompts:
         cost = round(float(channel.cost_per_second) * duration, 4)
@@ -468,7 +485,15 @@ async def _run_shot(
         if user.balance < cost:
             raise WorkflowExecError("余额不足，无法继续生成镜头")
 
-        user.balance = float(user.balance) - cost
+        await record_entry(
+            db,
+            user,
+            -cost,
+            kind=KIND_CHARGE,
+            title=f"项目出片 #{run.id} 镜头",
+            ref_type="run",
+            ref_id=run.id,
+        )
         node_cost += cost
         charged.append(cost)
         await db.commit()
@@ -481,13 +506,12 @@ async def _run_shot(
                 image_url=image_url,
             )
             url: str | None = None
-            # Agnes free tier rate-limits status queries; poll slower + back off on 429.
-            is_agnes = channel.provider.lower() in {"agnes", "pavo", "agnes-pavo"}
-            interval = 12.0 if is_agnes else 5.0
-            polls = 60 if is_agnes else 36
             rate_hits = 0
+            family = seedance.fal_family(channel)
             for _ in range(polls):
-                status, got = await seedance.poll_generation(channel, task_id)
+                status, got = await seedance.poll_generation(
+                    channel, task_id, user_id=user.id
+                )
                 if status == "succeeded":
                     url = got
                     if on_hint:
@@ -502,8 +526,13 @@ async def _run_shot(
                     # Extra wait beyond gate backoff inside poll_agnes
                     await asyncio.sleep(min(15.0 * rate_hits, 60.0))
                     continue
-                if on_hint and is_agnes:
-                    await on_hint("生成中（Agnes 状态查询已节流）…")
+                if on_hint:
+                    if is_agnes:
+                        await on_hint("生成中（Agnes 状态查询已节流）…")
+                    elif family == "seedance-2.5":
+                        await on_hint("生成中（火山方舟 Seedance 2.x，可能需数分钟）…")
+                    elif family == "seedance-lite":
+                        await on_hint("生成中（火山方舟 Seedance Lite）…")
                 await asyncio.sleep(interval)
             if not url:
                 if rate_hits:
@@ -518,7 +547,15 @@ async def _run_shot(
         except Exception as exc:  # noqa: BLE001
             # Refund this shot's cost
             await db.refresh(user)
-            user.balance = float(user.balance) + cost
+            await record_entry(
+                db,
+                user,
+                cost,
+                kind=KIND_REFUND,
+                title=f"项目出片 #{run.id} 镜头退款",
+                ref_type="run",
+                ref_id=run.id,
+            )
             charged.pop()
             node_cost -= cost
             await db.commit()
@@ -698,7 +735,7 @@ async def execute_run(run_id: int) -> None:
                 elif ntype in ("ImageAsset", "MakeupControl"):
                     out = _exec_image_asset(ctx, data)
                 elif ntype in ("ImageToVideo", "ShotGenerate"):
-                    out = await _run_shot(db, user, ctx, data, charged, on_hint=_hint)
+                    out = await _run_shot(db, user, run, ctx, data, charged, on_hint=_hint)
                     cost = float(out.get("shot_cost") or 0)
                 elif ntype == "VideoTrim":
                     out = await _exec_trim(user.id, ctx, data)
@@ -754,6 +791,8 @@ async def execute_run(run_id: int) -> None:
 
             await db.refresh(run)
             if run.status == WorkflowRunStatus.CANCELLED.value:
+                await delete_ephemeral_run(db, run)
+                await db.commit()
                 return
 
             run.status = WorkflowRunStatus.SUCCEEDED.value
@@ -763,6 +802,33 @@ async def execute_run(run_id: int) -> None:
             run.balance_after = user.balance
             run.node_states_json = json.dumps(node_states, ensure_ascii=False)
             await db.commit()
+            if run.workflow_id:
+                wf = await db.get(Workflow, run.workflow_id)
+                if wf is not None:
+                    last_img = None
+                    for nid in order:
+                        o = outputs.get(nid) or {}
+                        img = o.get("image_url")
+                        if isinstance(img, str) and img.strip() and not is_video_url(img):
+                            await upsert_asset(
+                                db,
+                                workflow_id=wf.id,
+                                user_id=wf.user_id,
+                                url=img.strip(),
+                                kind="image",
+                            )
+                            last_img = img.strip()
+                    await sync_from_graph(db, wf)
+                    if result_url and is_video_url(result_url):
+                        wf.cover_url = result_url
+                        await replace_output(
+                            db, workflow_id=wf.id, user_id=wf.user_id, url=result_url
+                        )
+                    else:
+                        await refresh_cover(db, wf, prefer_url=last_img)
+                    await prune_runs_keep_current(db, wf.id, run.id)
+                    await db.commit()
+            return
 
         except Exception as exc:  # noqa: BLE001
             await db.refresh(run)
@@ -778,16 +844,34 @@ async def execute_run(run_id: int) -> None:
                 refund = round(sum(charged), 4)
                 await db.refresh(user)
                 if refund > 0:
-                    user.balance = float(user.balance) + refund
+                    await record_entry(
+                        db,
+                        user,
+                        refund,
+                        kind=KIND_REFUND,
+                        title=f"项目出片 #{run.id} 整单退款",
+                        ref_type="run",
+                        ref_id=run.id,
+                    )
                     run.cost = 0.0
                 run.balance_after = user.balance
+                await db.commit()
+                await delete_ephemeral_run(db, run)
                 await db.commit()
                 return
 
             refund = round(sum(charged), 4)
             await db.refresh(user)
             if refund > 0:
-                user.balance = float(user.balance) + refund
+                await record_entry(
+                    db,
+                    user,
+                    refund,
+                    kind=KIND_REFUND,
+                    title=f"项目出片 #{run.id} 整单退款",
+                    ref_type="run",
+                    ref_id=run.id,
+                )
                 run.status = WorkflowRunStatus.REFUNDED.value
             else:
                 run.status = WorkflowRunStatus.FAILED.value
@@ -799,4 +883,6 @@ async def execute_run(run_id: int) -> None:
                     st["status"] = "failed"
                     st["error"] = str(exc)[:500]
             run.node_states_json = json.dumps(node_states, ensure_ascii=False)
+            await db.commit()
+            await delete_ephemeral_run(db, run)
             await db.commit()

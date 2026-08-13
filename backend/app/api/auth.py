@@ -8,6 +8,7 @@ from app.deps import get_current_user
 from app.models import User, UserRole
 from app.schemas import LoginIn, MeOut, RegisterIn, TokenOut, UserOut
 from app.security import create_access_token, hash_password, verify_password
+from app.services.ledger import KIND_GRANT, record_entry
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -25,6 +26,15 @@ async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)) -> User
         balance=50.0,
     )
     db.add(user)
+    await db.flush()
+    await record_entry(
+        db,
+        user,
+        50.0,
+        kind=KIND_GRANT,
+        title="注册赠送",
+        mutate=False,
+    )
     await db.commit()
     await db.refresh(user)
     return user

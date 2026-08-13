@@ -1,0 +1,1342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SeeMeTVC · 原型图</title>
+<style>
+:root {
+  --bg: #faf7f8; --bg-soft: #f1e9ed; --surface: #ffffff;
+  --ink: #241e22; --ink-soft: #5c5158; --muted: #9a8e95;
+  --line: #eadfe4; --line-strong: #dccfd6;
+  --accent: #d4578a; --accent-soft: rgba(212, 87, 138, 0.12); --accent-ink: #fff7fa;
+  --cta: #241e22; --cta-ink: #fff9fb;
+  --ok: #2f9d6a; --danger: #e25563; --warn: #d98b3c; --rose: #f3c0d1; --pearl: #fff9fb;
+  --rail: #241e22; --rail-muted: #9a8e95; --rail-hover: #3a3036;
+  --radius: 22px; --radius-sm: 14px; --radius-xs: 12px;
+  --font: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  --display: "Segoe UI", "Microsoft YaHei", sans-serif;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --shadow: 0 12px 32px rgba(60, 30, 45, 0.07);
+  --shadow-lg: 0 24px 60px rgba(60, 30, 45, 0.1);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: var(--font); color: var(--ink);
+  background:
+    radial-gradient(900px 480px at 8% -10%, rgba(243, 192, 209, 0.45), transparent 55%),
+    radial-gradient(700px 420px at 100% 0%, rgba(212, 87, 138, 0.1), transparent 50%),
+    linear-gradient(180deg, #fffafb 0%, var(--bg) 42%, #f6f0f3 100%);
+  background-attachment: fixed; -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent); }
+.hidden { display: none !important; }
+h1, h2 { margin: 0 0 0.5rem; font-family: var(--display); letter-spacing: -0.03em; }
+.muted { color: var(--muted); }
+.lead { color: var(--ink-soft); line-height: 1.55; }
+.error { color: var(--danger); font-size: 0.9rem; }
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 0.4rem; margin: 0 0 0.75rem;
+  padding: 0.28rem 0.7rem; border-radius: 999px; background: var(--accent-soft);
+  color: var(--accent); font-size: 0.75rem; font-weight: 650;
+}
+.ghost, .linkish, .primary, .danger-btn, .secondary {
+  border-radius: 999px; border: 1px solid var(--line); padding: 0.45rem 0.95rem; background: var(--surface);
+}
+.ghost:hover, .secondary:hover { background: var(--bg-soft); }
+.linkish { border: 0; background: transparent; color: var(--accent); padding: 0.35rem 0; }
+.primary { background: var(--cta); color: var(--cta-ink); border-color: var(--cta); font-weight: 600; }
+.primary:hover { filter: brightness(1.08); }
+.primary:disabled, .ghost:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+.danger-btn { background: #fff5f6; color: var(--danger); border-color: #f3c4c9; }
+.block { width: 100%; display: block; }
+label { display: block; font-size: 0.85rem; font-weight: 600; margin: 0.65rem 0 0.35rem; color: var(--ink-soft); }
+input, select, textarea {
+  width: 100%; border: 1px solid var(--line-strong); border-radius: var(--radius-xs);
+  padding: 0.65rem 0.8rem; background: #fff; color: var(--ink);
+}
+.status {
+  display: inline-flex; align-items: center; padding: 0.15rem 0.55rem; border-radius: 999px;
+  font-size: 0.75rem; font-weight: 650;
+}
+.status-succeeded, .status-completed { background: rgba(47,157,106,.12); color: var(--ok); }
+.status-running, .status-queued, .status-pending { background: rgba(217,139,60,.14); color: var(--warn); }
+.status-failed, .status-failed_refunded { background: rgba(226,85,99,.12); color: var(--danger); }
+.status-draft { background: var(--bg-soft); color: var(--muted); }
+
+/* Auth — from v1 */
+.auth-page { position: relative; min-height: 100vh; display: grid; place-items: center; padding: 2rem 1.25rem; overflow: hidden; }
+.auth-page::before, .auth-page::after {
+  content: ""; position: absolute; border-radius: 50%; filter: blur(40px); pointer-events: none; z-index: 0;
+}
+.auth-page::before { width: 420px; height: 420px; top: -80px; left: -60px; background: rgba(243,192,209,.55); }
+.auth-page::after { width: 380px; height: 380px; right: -40px; bottom: -60px; background: rgba(212,87,138,.16); }
+.auth-shell {
+  position: relative; z-index: 1; width: min(1200px, 100%);
+  display: grid; grid-template-columns: 1.2fr 0.9fr; gap: 1.25rem;
+}
+.auth-hero {
+  padding: 2rem; border-radius: 28px;
+  background: linear-gradient(165deg, rgba(255,255,255,.7), rgba(255,249,251,.5));
+  border: 1px solid rgba(255,255,255,.85); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; min-height: 560px;
+}
+.auth-hero-mosaic {
+  display: grid; grid-template-columns: 1.35fr 1fr 1fr; grid-template-rows: 1fr 1fr;
+  gap: 0.7rem; flex: 1; min-height: 280px; margin-bottom: 1.25rem;
+}
+.auth-tile {
+  border-radius: 18px; overflow: hidden; position: relative;
+  box-shadow: var(--shadow);
+}
+.auth-tile:nth-child(1) { grid-row: span 2; background: linear-gradient(160deg, #c45a7a, #f3c0d1); }
+.auth-tile:nth-child(2) { background: linear-gradient(160deg, #e8d0b8, #f7efe6); }
+.auth-tile:nth-child(3) { background: linear-gradient(160deg, #2a2430, #8a6a7a); }
+.auth-tile::after {
+  content: attr(data-label); position: absolute; left: 0.8rem; bottom: 0.7rem;
+  color: #fff; font-size: 0.75rem; font-weight: 650; text-shadow: 0 1px 10px rgba(0,0,0,.35);
+}
+.brand-mark {
+  font-family: var(--display); font-weight: 750; font-size: clamp(2.2rem, 4.8vw, 3.1rem);
+  letter-spacing: -0.045em; line-height: 1.05; margin: 0 0 0.75rem;
+}
+.auth-panel {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 28px;
+  padding: 2.2rem; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; justify-content: center;
+}
+.auth-panel h1 { font-size: 2rem; margin-bottom: 0.35rem; }
+.auth-demo-hint { margin: 0.85rem 0 0; font-size: 0.82rem; }
+.auth-switch { margin-top: 0.85rem; }
+
+/* App chrome — v2 IA + v1 palette */
+.app { min-height: 100vh; height: 100vh; display: flex; overflow: hidden; }
+.rail {
+  width: 84px; background: var(--rail); color: #f3e9ee;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 16px 8px; gap: 22px; flex-shrink: 0;
+}
+.logo {
+  width: 42px; height: 42px; border-radius: 12px;
+  background: var(--accent); color: #fff; display: grid; place-items: center;
+  font-weight: 800; letter-spacing: -1px; font-size: 0.85rem;
+}
+.rail nav { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.rail button {
+  border: 0; background: transparent; color: var(--rail-muted);
+  padding: 10px 4px; font-size: 11px; display: grid; gap: 5px; justify-items: center; width: 100%;
+  border-radius: 12px;
+}
+.rail button.active, .rail button:hover { background: var(--rail-hover); color: #fff; }
+.rail button .ico { font-size: 16px; line-height: 1; }
+.shell { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.topbar {
+  height: 64px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 28px; flex-shrink: 0;
+  background: rgba(255, 250, 251, 0.86); backdrop-filter: blur(16px) saturate(1.15);
+  border-bottom: 1px solid var(--line);
+}
+.brand { font-family: var(--display); font-weight: 750; font-size: 1.15rem; letter-spacing: -0.03em; }
+.brand span { color: var(--accent); }
+.topbar strong { display: block; font-size: 1.05rem; margin-top: 1px; }
+.top-actions { display: flex; align-items: center; gap: 10px; }
+.balance-chip {
+  display: inline-flex; align-items: baseline; gap: 0.3rem;
+  padding: 0.4rem 0.85rem; border-radius: 999px; background: var(--accent-soft); font-size: 0.85rem; border: 0;
+}
+.balance-chip em { font-style: normal; color: var(--accent); font-weight: 700; }
+.account { display: flex; align-items: center; gap: 8px; background: transparent; border: 0; position: relative; }
+.avatar {
+  width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
+  display: grid; place-items: center; font-size: 12px; font-weight: 700;
+}
+.account-menu {
+  position: absolute; right: 0; top: 36px; width: 180px; background: #fff;
+  border: 1px solid var(--line); box-shadow: var(--shadow); z-index: 8; border-radius: 14px; padding: 6px;
+}
+.account-menu button {
+  display: block; width: 100%; text-align: left; border: 0; background: #fff; padding: 9px 11px; font-size: 12px; border-radius: 10px;
+}
+.account-menu button:hover { background: var(--bg-soft); }
+.page { max-width: 1280px; margin: 0 auto; padding: 28px 32px 72px; width: 100%; overflow-y: auto; flex: 1; }
+.heading { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 18px; gap: 16px; }
+.heading h1 { font-size: 1.85rem; margin: 4px 0 6px; }
+.heading p { margin: 0; }
+.page-head { margin-bottom: 1.35rem; }
+.page-head h1 { font-size: 1.85rem; }
+
+.filterbar { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+.search {
+  background: #fff; border: 1px solid var(--line); display: flex; align-items: center;
+  gap: 8px; padding: 8px 12px; min-width: 260px; border-radius: 999px;
+}
+.search input { border: 0; outline: 0; width: 100%; background: transparent; padding: 0; }
+.filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.filters select { border: 1px solid var(--line); background: #fff; padding: 8px 10px; border-radius: 999px; width: auto; }
+
+.project-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.project-grid.list { grid-template-columns: 1fr; }
+.new-card, .project-card, .tpl-card, .hist-card, .panel {
+  border: 1px solid var(--line); background: #fff; text-align: left; border-radius: 18px; box-shadow: var(--shadow);
+}
+.new-card {
+  min-height: 232px; display: grid; place-items: center; align-content: center;
+  gap: 7px; color: var(--muted); border-style: dashed; background: rgba(255,255,255,.55);
+}
+.new-mark {
+  width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--line);
+  display: grid; place-items: center; font-size: 24px; color: var(--ink);
+}
+.project-card { position: relative; overflow: hidden; }
+.thumb {
+  height: 132px; position: relative; overflow: hidden;
+  border-bottom: 1px solid var(--line);
+}
+.thumb.a169 { background: linear-gradient(135deg, #d4578a, #f3c0d1); }
+.thumb.a916 { background: linear-gradient(180deg, #c45a7a 0%, #eadfe4 100%); }
+.thumb.a11 { background: linear-gradient(135deg, #8a5a6c, #f3c0d1); }
+.thumb-corner, .thumb-cover {
+  position: absolute; background: rgba(36,30,34,.55); color: #fff;
+  font-size: 11px; padding: 3px 8px; border-radius: 999px;
+}
+.thumb-corner { right: 10px; top: 10px; }
+.thumb-cover { left: 10px; bottom: 10px; }
+.card-info { padding: 12px 14px 14px; }
+.card-title { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; font-weight: 700; }
+.card-meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.card-status { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 12px; }
+.more { border: 0; background: transparent; padding: 0 4px; color: var(--muted); }
+.more-menu {
+  position: absolute; right: 10px; top: 148px; width: 140px; background: #fff;
+  border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); z-index: 4; padding: 4px;
+}
+.more-menu button { display: block; width: 100%; text-align: left; border: 0; background: #fff; padding: 8px 10px; border-radius: 8px; font-size: 12px; }
+.more-menu button:hover { background: var(--bg-soft); }
+
+.tpl-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.tpl-card { padding: 16px 18px 18px; }
+.tpl-card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+.tpl-card .ver { color: var(--muted); font-size: 0.82rem; margin: 0 0 12px; min-height: 2.4em; }
+.block-title { font-size: 1.1rem; margin: 1.5rem 0 0.85rem; }
+.promo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.85rem; }
+.promo-card {
+  border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: #fff;
+  text-align: left; padding: 0;
+}
+.promo-card:hover { box-shadow: var(--shadow); }
+.promo-ph {
+  width: 100%; height: 120px; display: grid; place-items: center; color: #fff; font-weight: 700;
+  background: linear-gradient(135deg, #f3c0d1, #eadfe4 50%, #d4578a);
+}
+.promo-card-body { padding: 0.7rem 0.8rem 0.9rem; }
+.promo-card-tag { font-size: 0.72rem; color: var(--accent); font-weight: 700; }
+.promo-card-title { font-size: 0.95rem; font-weight: 700; margin: 0.2rem 0; }
+.promo-card-brand { font-size: 0.78rem; color: var(--muted); }
+.tag-filters { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 1rem; }
+.tag-filters button, .filter-tabs button {
+  border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 0.35rem 0.75rem; font-size: 0.82rem;
+}
+.tag-filters button.active, .filter-tabs button.active { background: var(--accent-soft); color: var(--accent); border-color: var(--rose); font-weight: 650; }
+
+.empty-panel {
+  max-width: 640px; margin: 48px auto; text-align: center;
+  background: #fff; border: 1px dashed var(--line); border-radius: 22px; padding: 40px 32px;
+  box-shadow: var(--shadow);
+}
+.empty-actions { display: flex; justify-content: center; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+
+.history-list { display: flex; flex-direction: column; gap: 0.55rem; }
+.history-row {
+  border: 1px solid var(--line); border-radius: 14px; background: #fff; padding: 0.85rem 1rem;
+  display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: center;
+}
+.history-row:hover { border-color: var(--rose); }
+.history-row.deferred { opacity: 0.62; cursor: default; background: var(--pearl); }
+.history-row.deferred:hover { border-color: var(--line); }
+.wall-card { border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: #fff; padding: 0; }
+.history-wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.85rem; margin-bottom: 1.6rem; }
+.wall-card .thumb {
+  height: 120px; color: #fff; display: grid; place-items: center; font-weight: 700; border: 0;
+}
+.wall-card .body { padding: 0.7rem 0.8rem; }
+
+.admin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.panel { padding: 1.1rem 1.2rem; }
+.panel h2 { font-size: 1.1rem; margin-bottom: 0.75rem; }
+.table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.table th, .table td { text-align: left; padding: 0.55rem 0.4rem; border-bottom: 1px solid var(--line); }
+.chip-ok { color: var(--ok); font-weight: 650; }
+.chip-off { color: var(--muted); }
+.channel-card {
+  border: 1px solid var(--line); border-radius: 14px; padding: .75rem .85rem; margin-bottom: .55rem; background: #fff;
+}
+.channel-card .row { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }
+.channel-card .meta { font-size: .78rem; color: var(--muted); margin: .25rem 0 .45rem; }
+
+.ledger-list { max-height: 360px; overflow: auto; }
+.ledger-row {
+  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+  padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 0.88rem;
+}
+.ledger-amt.is-debit { color: var(--danger); }
+.ledger-amt.is-credit { color: var(--ok); }
+.studio-thin { max-width: 560px; }
+.studio-job {
+  margin-top: 1rem; padding: 0.85rem 1rem; border: 1px solid var(--line); border-radius: 14px; background: #fff;
+}
+
+/* Canvas — from v1 docks */
+.canvas-app { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; background: #fffafb; }
+.cv-stage { position: relative; flex: 1; min-height: 0; background:
+  radial-gradient(circle at 1px 1px, rgba(212,87,138,.18) 1px, transparent 0) 0 0 / 22px 22px,
+  linear-gradient(180deg, #fffafb, #f7eef2);
+}
+.cv-topbar {
+  position: absolute; top: 0.85rem; left: 50%; transform: translateX(-50%); z-index: 5;
+  display: flex; align-items: center; gap: 0.65rem; padding: 0.45rem 0.65rem;
+  background: rgba(255,255,255,.92); border: 1px solid var(--line); border-radius: 999px; box-shadow: var(--shadow);
+  white-space: nowrap;
+}
+.cv-topbar-name {
+  border: 0; background: transparent; font-weight: 700; min-width: 8rem; max-width: 14rem;
+  padding: .2rem .35rem; border-radius: 8px; color: var(--ink);
+}
+.cv-topbar-name:hover, .cv-topbar-name:focus { background: var(--bg-soft); outline: none; }
+.cv-dock {
+  position: absolute; z-index: 4; top: 4.2rem; width: 268px; max-height: calc(100% - 5rem);
+  overflow: hidden; background: rgba(255,255,255,.94); border: 1px solid var(--line);
+  border-radius: 18px; box-shadow: var(--shadow); display: flex; flex-direction: column;
+}
+.cv-dock.left { left: 0.85rem; }
+.cv-dock.right { right: 0.85rem; width: 300px; }
+.cv-dock.is-collapsed { width: 44px; }
+.cv-dock.is-collapsed .cv-dock-body { display: none; }
+.cv-dock-head {
+  display: flex; align-items: center; justify-content: space-between; gap: .5rem;
+  padding: .7rem .75rem; border-bottom: 1px solid var(--line); flex-shrink: 0;
+}
+.cv-dock-head strong { font-size: .9rem; }
+.cv-dock-tabs { display:flex; gap:4px; padding: 0 .75rem .55rem; }
+.cv-dock-tabs button {
+  flex:1; border:1px solid var(--line); background:#fff; border-radius:999px; padding:.28rem 0; font-size:.75rem;
+}
+.cv-dock-tabs button.active { background: var(--accent-soft); color: var(--accent); border-color: var(--rose); font-weight:650; }
+.asset-item {
+  width:100%; text-align:left; margin:.25rem 0; border:1px solid var(--line); background:#fff;
+  border-radius:12px; padding:.5rem .65rem; font-size:.82rem;
+}
+.asset-item small { display:block; color:var(--muted); font-size:.72rem; margin-top:.15rem; }
+.cv-dock-body { padding: 0.75rem 0.85rem; overflow: auto; flex: 1; }
+.cv-dock .section { margin-bottom: 0.9rem; }
+.cv-panel-toggle {
+  border: 1px solid var(--line); background: #fff; border-radius: 10px;
+  width: 28px; height: 28px; padding: 0; font-size: 1rem; line-height: 1;
+}
+.cv-controls {
+  position: absolute; left: .85rem; bottom: .85rem; z-index: 4;
+  display: flex; flex-direction: column; gap: .35rem;
+}
+.cv-controls button {
+  width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line);
+  background: rgba(255,255,255,.95); box-shadow: var(--shadow); font-weight: 700;
+}
+.cv-minimap {
+  position: absolute; right: .85rem; bottom: .85rem; z-index: 4;
+  width: 140px; height: 92px; border-radius: 12px; border: 1px solid var(--line);
+  background: rgba(255,249,251,.92); box-shadow: var(--shadow); overflow: hidden;
+}
+.cv-minimap-world { position: absolute; inset: 8px; }
+.cv-minimap-node { position: absolute; width: 10px; height: 7px; border-radius: 2px; background: #d4578a; opacity: .85; }
+.palette-btn, .tpl-btn, .draft-btn {
+  width: 100%; text-align: left; margin: 0.25rem 0; border: 1px solid var(--line);
+  background: #fff; border-radius: 12px; padding: 0.5rem 0.65rem; font-size: 0.82rem;
+}
+.tpl-btn.active, .draft-btn.active { border-color: var(--accent); background: var(--pearl); }
+.palette-btn small, .tpl-btn small { display: block; color: var(--muted); font-size: 0.72rem; margin-top: 0.15rem; }
+.cv-block {
+  position: absolute; top: 4.1rem; left: 50%; transform: translateX(-50%); z-index: 6;
+  max-width: min(720px, calc(100% - 2rem));
+  background: rgba(255,250,251,.95); border: 1px dashed rgba(212,87,138,.35);
+  color: var(--ink-soft); padding: 0.55rem 0.9rem; border-radius: 12px; font-size: 0.85rem;
+  box-shadow: var(--shadow);
+}
+.cv-block strong { color: var(--ink); margin-right: .4rem; }
+.cv-board { position: absolute; inset: 0; overflow: hidden; cursor: grab; }
+.cv-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.cv-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.cv-node { position: absolute; width: 260px; background: transparent; border: none; user-select: none; cursor: grab; overflow: visible; }
+.cv-card {
+  border-radius: 16px; background: linear-gradient(165deg, #fff 0%, #fff7fa 100%);
+  border: 1px solid rgba(212,87,138,.22); box-shadow: var(--shadow); overflow: hidden;
+}
+.cv-node.selected .cv-card {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(212,87,138,.35), 0 0 0 6px rgba(212,87,138,.1), var(--shadow-lg);
+}
+.cv-node.st-running .cv-card { border-color: rgba(212,87,138,.75); }
+.cv-card-top { display: flex; align-items: center; justify-content: space-between; gap: .4rem; padding: .55rem .65rem .35rem; }
+.cv-kind {
+  display: inline-flex; align-items: center; gap: .3rem; padding: .15rem .45rem;
+  border-radius: 999px; font-size: .68rem; font-weight: 650; background: var(--accent-soft); color: var(--accent);
+}
+.cv-kind.tone-text { color:#9a4a6e; background:rgba(212,87,138,.1); }
+.cv-kind.tone-image { color:#2a7a55; background:rgba(47,157,106,.12); }
+.cv-kind.tone-gen, .cv-kind.tone-video { color:#9a5a22; background:rgba(217,139,60,.12); }
+.cv-kind.tone-tool { color:#6b4a5c; background:rgba(156,120,140,.14); }
+.cv-kind.tone-soon { color: var(--muted); background: var(--bg-soft); }
+.cv-media {
+  margin: 0 .55rem; height: 92px; border-radius: 12px; overflow: hidden;
+  background: linear-gradient(160deg, #f7e9ef, #f1e9ed);
+  display: grid; place-items: center; color: var(--ink-soft); font-size: .75rem; text-align: center; padding: .5rem;
+}
+.cv-card-foot { padding: .45rem .65rem .55rem; }
+.cv-node-name { width: 100%; border: 0; background: transparent; font-weight: 700; font-size: .85rem; padding: .15rem 0; color: var(--ink); }
+.cv-port-hints { display:flex; flex-wrap:wrap; gap:.25rem; margin-top:.25rem; }
+.cv-port-hints span { font-size:.62rem; padding:.08rem .35rem; border-radius:999px; background:var(--bg-soft); color:var(--muted); }
+.banner-warn {
+  position: absolute; top: 4.1rem; left: 292px; right: 320px; z-index: 6;
+  background: #fff8e8; border: 1px solid #f0d2a0; color: #8a5a12;
+  padding: 0.55rem 0.9rem; border-radius: 12px; font-size: 0.85rem; display: flex; gap: 0.75rem; align-items: center;
+  box-shadow: var(--shadow);
+}
+.modal-back {
+  position: fixed; inset: 0; background: rgba(30,18,24,.45); z-index: 50;
+  display: grid; place-items: center; padding: 1.5rem;
+}
+.modal {
+  width: min(520px, 100%); background: #fff; border-radius: 20px; padding: 1.25rem 1.35rem;
+  box-shadow: var(--shadow-lg); border: 1px solid var(--line);
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+.mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mode-card {
+  border: 1px solid var(--line); background: #fff; border-radius: 14px; padding: 12px; text-align: left;
+}
+.mode-card.active { border-color: var(--accent); background: var(--pearl); }
+.mode-card small { display: block; color: var(--muted); margin-top: 4px; font-size: 0.75rem; }
+.toast {
+  position: fixed; left: 50%; bottom: 2rem; transform: translateX(-50%); z-index: 60;
+  background: rgba(36,30,34,.92); color: #fff; padding: 0.65rem 1.1rem; border-radius: 999px;
+  font-size: 0.88rem; opacity: 0; pointer-events: none; transition: opacity .25s var(--ease);
+}
+.toast.show { opacity: 1; }
+@media (max-width: 1100px) {
+  .auth-shell, .admin-grid, .project-grid, .tpl-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div id="view-login" class="auth-page">
+  <div class="auth-shell">
+    <div class="auth-hero">
+      <div class="auth-hero-mosaic">
+        <div class="auth-tile" data-label="唇妆"></div>
+        <div class="auth-tile" data-label="护肤"></div>
+        <div class="auth-tile" data-label="香氛"></div>
+      </div>
+      <div>
+        <p class="eyebrow">面部美妆 · TVC 成片</p>
+        <h1 class="brand-mark">为美妆品牌拍出能上线的广告片</h1>
+        <p class="lead">唇釉微距、底妆贴合、精华光感——面向面部美妆垂类。项目里编排成片，余额清晰。</p>
+      </div>
+    </div>
+    <div class="auth-panel">
+      <h1 id="auth-title">进入工作区</h1>
+      <p class="muted">项目编排 · 成片回看 · 余额清晰</p>
+      <form id="auth-form">
+        <label id="auth-nick-wrap" class="hidden">昵称 / 品牌名<input id="auth-nick" /></label>
+        <label>邮箱<input id="auth-email" type="email" value="admin@example.com" required autocomplete="username" /></label>
+        <label>密码<input id="auth-pass" type="password" value="admin123456" required minlength="6" autocomplete="current-password" /></label>
+        <p id="auth-error" class="error hidden"></p>
+        <button class="block primary" type="submit" id="auth-submit">开始创作</button>
+      </form>
+      <button type="button" class="linkish auth-switch" id="auth-toggle">没有账号？注册</button>
+      <p class="auth-demo-hint muted">演示已预填超管账号，任意非空即可进入。</p>
+    </div>
+  </div>
+</div>
+
+<div id="view-app" class="app hidden">
+  <aside class="rail">
+    <div class="logo" title="SeeMeTVC">ST</div>
+    <nav id="rail-nav"></nav>
+  </aside>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <span class="eyebrow" style="margin:0">SeeMe<span style="color:var(--accent)">TVC</span></span>
+        <strong id="top-title">我的项目</strong>
+      </div>
+      <div class="top-actions">
+        <button class="balance-chip" type="button" id="btn-balance">余额 <em id="bal">128.50</em> 积分</button>
+        <button class="account" type="button" id="btn-account">
+          <span class="avatar">管</span><span>演示超管</span>
+        </button>
+        <div id="account-menu" class="account-menu hidden">
+          <button type="button" id="btn-studio">工作室（暗门）</button>
+          <button type="button" id="btn-logout">退出</button>
+        </div>
+      </div>
+    </header>
+    <div id="page" class="page"></div>
+  </div>
+</div>
+
+<div id="view-canvas" class="canvas-app hidden">
+  <div class="cv-stage">
+    <div class="cv-topbar">
+      <button type="button" class="ghost" id="wf-back">← 工作区</button>
+      <input class="cv-topbar-name" id="wf-name" value="春夏唇釉 TVC" placeholder="项目名称" />
+      <span class="muted" id="wf-queue">队列空闲</span>
+      <button type="button" class="ghost" id="wf-cancel" disabled>取消</button>
+      <button type="button" class="ghost" id="wf-save">保存</button>
+      <button type="button" class="primary" id="wf-run">一键跑</button>
+    </div>
+    <div id="cv-block" class="cv-block hidden"></div>
+    <aside class="cv-dock left is-open" id="dock-left">
+      <div class="cv-dock-head">
+        <div><p class="eyebrow">项目</p><strong id="dock-left-title">节点</strong></div>
+        <button type="button" class="cv-panel-toggle" id="dock-left-toggle">‹</button>
+      </div>
+      <div class="cv-dock-tabs">
+        <button type="button" class="active" data-left-tab="nodes">节点</button>
+        <button type="button" data-left-tab="assets">素材</button>
+      </div>
+      <div class="cv-dock-body" id="dock-left-nodes">
+        <div class="section">
+          <p class="eyebrow">模板</p>
+          <button type="button" class="tpl-btn active" data-tpl="beauty_linear">美妆线性链路<small>Brief→剧本→妆造→图生→trim→拼接→成片</small></button>
+          <button type="button" class="tpl-btn" data-tpl="standard">标准美妆 TVC<small>同线性链路（图相同）</small></button>
+          <button type="button" class="tpl-btn" data-tpl="quick_shot">单镜头快出<small>Brief + 图 → 一镜成片</small></button>
+        </div>
+        <div class="section">
+          <p class="eyebrow">添加节点</p>
+          <button type="button" class="palette-btn" data-add="TextAsset">文本<small>Brief / 剧本 / 提示词</small></button>
+          <button type="button" class="palette-btn" data-add="ImageAsset">图片<small>上传或参考图</small></button>
+          <button type="button" class="palette-btn" data-add="ImageToVideo">图生视频<small>一镜一段</small></button>
+          <button type="button" class="palette-btn" data-add="VideoTrim">裁时长<small>ffmpeg trim</small></button>
+          <button type="button" class="palette-btn" data-add="VideoMux">真拼接<small>ffmpeg 合成</small></button>
+          <button type="button" class="palette-btn" data-add="VideoAsset">视频<small>成片载体</small></button>
+        </div>
+      </div>
+      <div class="cv-dock-body hidden" id="dock-left-assets">
+        <div class="section">
+          <p class="eyebrow">本项目素材</p>
+          <p class="muted" style="font-size:.72rem;line-height:1.5">扁平列表 · 图 / 视频 / 成片。跨项目复制，无文件夹。</p>
+          <div class="filter-tabs" id="asset-filter" style="margin:.4rem 0 .6rem">
+            <button type="button" class="active" data-akind="all">全部</button>
+            <button type="button" data-akind="image">图</button>
+            <button type="button" data-akind="video">视频</button>
+            <button type="button" data-akind="output">成片</button>
+          </div>
+          <button type="button" class="palette-btn" id="asset-upload">上传图 / 视频</button>
+          <div id="asset-list"></div>
+        </div>
+      </div>
+    </aside>
+    <aside class="cv-dock right is-open" id="dock-right">
+      <div class="cv-dock-head">
+        <div><p class="eyebrow">属性</p><strong>节点检查器</strong></div>
+        <button type="button" class="cv-panel-toggle" id="dock-right-toggle">›</button>
+      </div>
+      <div class="cv-dock-body">
+        <div id="wf-inspector">
+          <h2 style="font-size:1.05rem">选择节点</h2>
+          <p class="muted">点击画布节点查看示意字段。</p>
+          <div id="ins-fields"></div>
+        </div>
+      </div>
+    </aside>
+    <div class="cv-controls">
+      <button type="button" id="cv-zoom-in">+</button>
+      <button type="button" id="cv-zoom-out">−</button>
+      <button type="button" id="cv-zoom-reset">⤢</button>
+    </div>
+    <div class="cv-minimap"><div class="cv-minimap-world" id="cv-minimap-world"></div></div>
+    <div class="cv-board" id="cv-board">
+      <div class="cv-world" id="cv-world">
+        <svg class="cv-edges" id="cv-edges" width="2400" height="1200"></svg>
+        <div id="cv-nodes"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="modal" class="modal-back hidden"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const ROUTES = [
+  { id: "workspace", icon: "▦", title: "工作区" },
+  { id: "templates", icon: "▤", title: "模板" },
+  { id: "characters", icon: "♙", title: "人物" },
+  { id: "admin", icon: "⌘", title: "超管" },
+];
+const TITLES = {
+  workspace: "我的项目",
+  templates: "模板",
+  characters: "人物",
+  admin: "超管",
+  studio: "工作室（暗门）",
+};
+const PROMOS = [
+  { id:"lip-velvet", title:"丝绒唇釉特写", tag:"唇妆", brand:"ROUGE ATELIER", ph:"唇妆",
+    prompt:"Extreme close-up beauty TVC of velvet matte lipstick on soft lips, dew-like skin texture, slow push-in, luxury cosmetics commercial, 4k" },
+  { id:"serum-glow", title:"精华滴落光感", tag:"护肤", brand:"LUMINA LAB", ph:"护肤",
+    prompt:"Cinematic facial skincare TVC, glass dropper releasing serum onto glowing cheek, translucent skin, clean beauty commercial look" },
+  { id:"perfume-aura", title:"香氛瓶身氛围", tag:"香氛", brand:"NOIR ÉCLAT", ph:"香氛",
+    prompt:"Luxury perfume bottle on wet marble, soft morning light, subtle mist, elegant fragrance TVC product hero shot" },
+  { id:"base-skin", title:"底妆贴合演示", tag:"底妆", brand:"VEIL SKIN", ph:"底妆",
+    prompt:"Beauty influencer applying lightweight foundation on face, natural skin finish, soft window light, facial makeup TVC" },
+  { id:"palette-play", title:"彩盘开合运镜", tag:"彩妆", brand:"CHROMA BOX", ph:"彩妆",
+    prompt:"Top-down beauty TVC of eyeshadow palette opening, soft brushes sweeping pigments, colorful cosmetics flat lay" },
+  { id:"blush-flush", title:"腮红气色递进", tag:"面妆", brand:"FLUSH RITUAL", ph:"面妆",
+    prompt:"Close-up facial beauty commercial, soft peach blush applied to cheekbones, healthy flush, luxury makeup ad" },
+];
+const TPL = {
+  beauty_linear: {
+    name:"美妆线性链路",
+    hint:"Brief → 剧本 → 妆造 → 图生视频(一镜) → trim → 拼接 → 成片",
+    nodes:[
+      {id:"brief", type:"TextAsset", label:"品牌 Brief", x:40, y:80, text:"水光肌、持妆、气色 · 看见更好的自己"},
+      {id:"script", type:"TextAsset", label:"剧本", x:360, y:80, text:"3 镜：开场→特写→slogan"},
+      {id:"makeup", type:"ImageAsset", label:"妆造图", x:360, y:360, text:"妆前素颜 → 妆后气色"},
+      {id:"shot", type:"ImageToVideo", label:"图生视频", x:680, y:80, text:"5s · seedance-local-simulate", status:"succeeded"},
+      {id:"trim", type:"VideoTrim", label:"裁时长", x:1000, y:80, text:"0–4s", status:"succeeded"},
+      {id:"mux", type:"VideoMux", label:"真拼接", x:1320, y:80, text:"16:9", status:"succeeded"},
+      {id:"out", type:"VideoAsset", label:"成片", x:1640, y:80, text:"可预览", status:"succeeded"}
+    ],
+    edges:[["brief","script"],["script","shot"],["makeup","shot"],["shot","trim"],["trim","mux"],["shot","mux"],["mux","out"]]
+  },
+  standard: {
+    name:"标准美妆 TVC",
+    hint:"同线性链路（图相同）；若刚跑过易触发 Agnes 限流",
+    nodes:null, edges:null
+  },
+  quick_shot: {
+    name:"单镜头快出",
+    hint:"Brief + 图 → 一镜成片",
+    nodes:[
+      {id:"brief", type:"TextAsset", label:"Brief", x:60, y:120, text:"快出片 brief"},
+      {id:"makeup", type:"ImageAsset", label:"参考图", x:60, y:380, text:"产品静帧"},
+      {id:"shot", type:"ImageToVideo", label:"图生视频", x:380, y:200, text:"一镜成片"},
+      {id:"out", type:"VideoAsset", label:"成片", x:700, y:200, text:"输出"}
+    ],
+    edges:[["brief","shot"],["makeup","shot"],["shot","out"]]
+  }
+};
+TPL.standard.nodes = TPL.beauty_linear.nodes.map(n=>({...n}));
+TPL.standard.edges = TPL.beauty_linear.edges.map(e=>e.slice());
+
+const state = {
+  route: "workspace",
+  query: "",
+  filter: "all",
+  menu: -1,
+  showTag: "全部",
+  newMode: "blank",
+  modal: null,
+  authMode: "login",
+  leftTab: "nodes",
+  assetKind: "all",
+  runSeq: 43,
+  pendingCharge: 0,
+  studioJob: null,
+  studioPrompt: "Extreme close-up beauty TVC of velvet matte lipstick on soft lips, luxury cosmetics commercial",
+  assets: [
+    { id:"a1", kind:"image", name:"妆造参考.jpg", project:"p1" },
+    { id:"a2", kind:"output", name:"当前成片.mp4", project:"p1" },
+    { id:"a3", kind:"video", name:"产品静帧片段.mp4", project:"p1" }
+  ],
+  balance: 128.50,
+  spends: [
+    { title:"项目出片 #42 镜头", amount:-5, kind:"扣费", at:"今天 11:20" },
+    { title:"项目出片 #40 真拼接", amount:-0, kind:"扣费", at:"昨天 19:40" },
+    { title:"超管调整余额", amount:50, kind:"超管", at:"8 月 10 日" },
+    { title:"期初余额", amount:83.5, kind:"期初", at:"8 月 1 日" }
+  ],
+  projects: [
+    { id:"p1", name:"春夏唇釉 TVC", brand:"ROUGE ATELIER", aspect:"16:9", status:"running", cover:"output", updated:"今天 11:20", tpl:"beauty_linear" },
+    { id:"p2", name:"底妆贴合", brand:"VEIL SKIN", aspect:"9:16", status:"draft", cover:"image", updated:"昨天 18:02", tpl:"quick_shot" },
+    { id:"p3", name:"水光精华成片", brand:"LUMINA LAB", aspect:"16:9", status:"succeeded", cover:"output", updated:"8 月 11 日", tpl:"standard" }
+  ],
+  channels: [
+    { id:1, name:"本地seedance模拟版", provider:"mock", model_id:"seedance-local-simulate", upstream:"local-simulate", key:"mock:****", cost:0, enabled:true },
+    { id:2, name:"火山方舟 · Seedance Lite", provider:"ark", model_id:"seedance-lite", upstream:"doubao-seedance-1-0-lite-t2v-250428", key:"ark:****ef12", cost:1, enabled:true },
+    { id:3, name:"火山方舟 · Seedance 2.5", provider:"ark", model_id:"seedance-2.5", upstream:"doubao-seedance-2-0-260128", key:"ark:****ab90", cost:8, enabled:true },
+    { id:4, name:"Agnes AI Pavo", provider:"agnes", model_id:"agnes-pavo", upstream:"agnes-video-v2.0", key:"（未设置）", cost:0, enabled:false }
+  ],
+  users: [
+    { email:"admin@example.com", role:"super_admin", balance:128.50 },
+    { email:"demo@example.com", role:"user", balance:20 }
+  ],
+  wf: { projectId:"p1", name:"春夏唇釉 TVC", tpl:"beauty_linear", running:false, selected:"shot", zoom:1, nodes:[], edges:[] }
+};
+
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+function toast(msg){
+  const el=$("toast"); el.textContent=msg; el.classList.add("show");
+  clearTimeout(toast._t); toast._t=setTimeout(()=>el.classList.remove("show"), 2200);
+}
+function money(n){ return Number(n).toFixed(2); }
+function statusLabel(s){
+  return ({draft:"未出片", queued:"排队中", running:"生成中", succeeded:"已完成", failed:"失败"})[s]||s;
+}
+function nowLabel(){ return "刚刚"; }
+function addSpend(title, amount, kind){
+  state.balance = Math.round((state.balance + amount)*100)/100;
+  state.users[0].balance = state.balance;
+  $("bal").textContent = money(state.balance);
+  state.spends.unshift({ title, amount, kind, at: nowLabel() });
+}
+function hasModel(){ return state.channels.some(c=>c.enabled); }
+function cannotRunReason(){
+  const nodes=state.wf.nodes;
+  if(!nodes.length) return "画布上没有节点，无法生成。请从左侧「节点」添加「图生视频」等节点，或用模板预填后再一键跑。";
+  const runnable=nodes.some(n=>["ImageToVideo","VideoTrim","VideoMux","VideoAsset"].includes(n.type));
+  if(!runnable) return "没有可出片的节点。请添加「图生视频」「裁时长」或「真拼接」后再一键跑。";
+  if(!hasModel()) return "暂无可用模型，无法图生视频。请超管启用渠道后再一键跑。";
+  return null;
+}
+function syncRunBlock(){
+  const el=$("cv-block"); if(!el) return;
+  const reason=cannotRunReason();
+  const runBtn=$("wf-run");
+  if(reason){
+    el.classList.remove("hidden");
+    el.innerHTML=`<strong>无法生成</strong><span>${esc(reason)}</span>`;
+    if(runBtn){ runBtn.disabled=true; runBtn.title=reason; }
+  } else {
+    el.classList.add("hidden");
+    if(runBtn){ runBtn.disabled=!!state.wf.running; runBtn.title=""; }
+  }
+}
+
+/* ---------- Auth ---------- */
+function enterApp(msg){
+  $("view-login").classList.add("hidden");
+  $("view-app").classList.remove("hidden");
+  setRoute("workspace");
+  toast(msg);
+}
+$("auth-toggle").onclick = ()=>{
+  state.authMode = state.authMode==="login" ? "register" : "login";
+  const reg=state.authMode==="register";
+  $("auth-title").textContent = reg ? "创建品牌账号" : "进入工作区";
+  $("auth-submit").textContent = reg ? "注册并开始" : "开始创作";
+  $("auth-toggle").textContent = reg ? "已有账号？登录" : "没有账号？注册";
+  $("auth-nick-wrap").classList.toggle("hidden", !reg);
+};
+$("auth-form").onsubmit = (e)=>{
+  e.preventDefault();
+  if(!$("auth-email").value.trim() || !$("auth-pass").value.trim()){
+    $("auth-error").textContent="请填写邮箱和密码"; $("auth-error").classList.remove("hidden"); return;
+  }
+  if(state.authMode==="register"){
+    addSpend("注册赠送", 20, "赠送");
+    enterApp("已注册并进入工作区");
+  } else {
+    enterApp("已登录");
+  }
+};
+$("btn-studio").onclick = (e)=>{
+  e.stopPropagation();
+  $("account-menu").classList.add("hidden");
+  $("view-canvas").classList.add("hidden");
+  setRoute("studio");
+};
+$("btn-logout").onclick = ()=>{
+  $("view-app").classList.add("hidden");
+  $("view-canvas").classList.add("hidden");
+  $("view-login").classList.remove("hidden");
+  $("account-menu").classList.add("hidden");
+  toast("已退出");
+};
+$("btn-account").onclick = (e)=>{
+  e.stopPropagation();
+  $("account-menu").classList.toggle("hidden");
+};
+$("btn-balance").onclick = ()=>{ state.modal="balance"; renderModal(); };
+document.addEventListener("click", ()=> $("account-menu").classList.add("hidden"));
+
+/* ---------- Routing ---------- */
+function setRoute(route){
+  if(route==="history") route="workspace";
+  state.route = route;
+  state.menu = -1;
+  $("top-title").textContent = TITLES[route] || route;
+  $("bal").textContent = money(state.balance);
+  document.querySelectorAll("#rail-nav button").forEach(b=>b.classList.toggle("active", b.dataset.route===route));
+  $("page").innerHTML = pages[route] ? pages[route]() : pages.workspace();
+  bindPage();
+}
+function renderRail(){
+  $("rail-nav").innerHTML = ROUTES.map(r=>
+    `<button type="button" data-route="${r.id}" class="${state.route===r.id?"active":""}" title="${r.title}">
+      <span class="ico">${r.icon}</span><span>${r.title}</span>
+    </button>`
+  ).join("");
+  $("rail-nav").onclick = (e)=>{
+    const b=e.target.closest("button"); if(!b) return;
+    setRoute(b.dataset.route);
+  };
+}
+
+const pages = {
+  workspace(){
+    const q=state.query.trim().toLowerCase();
+    const list=state.projects.filter(p=>{
+      if(q && !(`${p.name} ${p.brand}`).toLowerCase().includes(q)) return false;
+      if(state.filter==="done" && p.status!=="succeeded") return false;
+      if(state.filter==="wip" && p.status==="succeeded") return false;
+      return true;
+    });
+    return `
+      <div class="heading">
+        <div><p class="eyebrow">工作区</p><h1>我的项目</h1>
+        <p class="lead">每个项目一张编辑画布。封面优先用成片，还没有成片时用最后一张图片。</p></div>
+        <button class="primary" type="button" id="btn-new">＋ 新建项目</button>
+      </div>
+      <div class="filterbar">
+        <label class="search">⌕<input id="ws-q" value="${esc(state.query)}" placeholder="搜索项目或品牌"></label>
+        <div class="filters">
+          <select id="ws-filter">
+            <option value="all" ${state.filter==="all"?"selected":""}>全部状态</option>
+            <option value="wip" ${state.filter==="wip"?"selected":""}>进行中</option>
+            <option value="done" ${state.filter==="done"?"selected":""}>已完成</option>
+          </select>
+        </div>
+      </div>
+      <div class="project-grid">
+        <button class="new-card" type="button" id="btn-new-card"><span class="new-mark">＋</span><strong>新建项目</strong><span>空白项目或官方模板</span></button>
+        ${list.map((p,i)=>`
+          <article class="project-card" data-open="${p.id}">
+            <div class="thumb ${p.aspect==="9:16"?"a916":"a169"}">
+              <span class="thumb-corner">${esc(p.aspect)}</span>
+              ${p.cover?`<span class="thumb-cover">${p.cover==="output"?"成片":"图"}</span>`:""}
+            </div>
+            <div class="card-info">
+              <div class="card-title">${esc(p.name)}
+                <button class="more" type="button" data-menu="${i}">⋯</button>
+              </div>
+              ${state.menu===i?`<div class="more-menu">
+                <button type="button" data-dup="${p.id}">复制项目</button>
+                <button type="button" class="danger-btn" data-del="${p.id}">删除</button>
+              </div>`:""}
+              <div class="card-meta"><span>${esc(p.brand)}</span><span>${esc(p.updated)}</span></div>
+              <div class="card-status"><span class="status status-${p.status}">${statusLabel(p.status)}</span></div>
+            </div>
+          </article>`).join("")}
+      </div>`;
+  },
+  templates(){
+    const tags=["全部","唇妆","护肤","香氛","底妆","彩妆","面妆"];
+    const promos=PROMOS.filter(p=>state.showTag==="全部"||p.tag===state.showTag);
+    return `
+      <div class="page-head">
+        <p class="eyebrow">模板</p>
+        <h1>模板</h1>
+        <p class="lead">官方模板与 Lookbook 同款。选用后新建项目并打开编辑，提示词写入 Brief。</p>
+      </div>
+      <h2 class="block-title">官方模板</h2>
+      <div class="tpl-grid">
+        ${["beauty_linear","standard","quick_shot"].map(id=>{
+          const t=TPL[id];
+          return `<article class="tpl-card">
+            <h3>${esc(t.name)}</h3>
+            <p class="ver">${esc(t.hint)}</p>
+            <button class="primary" type="button" data-use-tpl="${id}" style="margin-top:10px">用此模板新建项目</button>
+          </article>`;
+        }).join("")}
+      </div>
+      <h2 class="block-title">Lookbook 同款</h2>
+      <p class="muted" style="margin:-4px 0 12px">点选后新建项目，并把镜头提示词写入 Brief。</p>
+      <div class="tag-filters">${tags.map(t=>`<button type="button" class="${state.showTag===t?"active":""}" data-tag="${t}">${t}</button>`).join("")}</div>
+      <div class="promo-grid">${promos.map(p=>`
+        <button type="button" class="promo-card" data-promo="${p.id}">
+          <div class="promo-ph">${esc(p.ph)}</div>
+          <div class="promo-card-body">
+            <div class="promo-card-tag">${esc(p.tag)}</div>
+            <div class="promo-card-title">${esc(p.title)}</div>
+            <div class="promo-card-brand">${esc(p.brand)}</div>
+          </div>
+        </button>`).join("")}</div>`;
+  },
+  characters(){
+    return `
+      <div class="empty-panel">
+        <p class="eyebrow">人物资产库</p>
+        <h1>一级人物库本轮尚未开放</h1>
+        <p class="lead">请在项目里的 <strong>妆造图</strong> 节点上传肖像，或到左侧 <strong>素材</strong> Tab 上传图片。</p>
+        <div class="empty-actions">
+          <button class="secondary" type="button" data-go="workspace">回到工作区</button>
+          <button class="primary" type="button" id="open-makeup">用美妆线性链路新建项目</button>
+        </div>
+      </div>`;
+  },
+  studio(){
+    const job=state.studioJob;
+    return `
+      <div class="studio-thin">
+        <p class="eyebrow">美妆 TVC</p>
+        <h1>面部成片工作室</h1>
+        <p class="lead">暗门一键出片，不进左栏。成片不进「我的项目」，仍会扣费。</p>
+        ${!hasModel()?`<p class="error">暂无可用模型。请到超管启用渠道。</p>`:""}
+        <label>镜头提示词<textarea id="st-prompt" rows="6">${esc(state.studioPrompt)}</textarea></label>
+        <label>参考图（可选）</label>
+        <button type="button" class="ghost" id="st-img">上传参考图</button>
+        <div class="modal-actions" style="justify-content:flex-start">
+          <button type="button" class="primary" id="st-run" ${!hasModel()||(job&&job.status==="running")?"disabled":""}>一键出片</button>
+        </div>
+        ${job?`<div class="studio-job">
+          <strong>${statusLabel(job.status)}</strong>
+          <p class="muted" style="margin:.35rem 0 0">工作室出片 #${job.id} · ${job.cost===0?"0 元（本地模拟）":money(job.cost)+" 积分"}</p>
+        </div>`:""}
+      </div>`;
+  },
+  admin(){
+    return `
+      <div class="page-head">
+        <p class="eyebrow">超管</p>
+        <h1>超管后台管理</h1>
+        <p class="lead">上游 Key 只存在渠道表；用户只看余额与消耗。</p>
+      </div>
+      <div class="admin-grid">
+        <div class="panel">
+          <h2>新增渠道</h2>
+          <label>预设
+            <select id="ch-preset">
+              <option value="lite">火山方舟 · Seedance Lite</option>
+              <option value="25">火山方舟 · Seedance 2.5</option>
+              <option value="mock">本地seedance模拟版</option>
+              <option value="agnes">Agnes AI Pavo（免费）</option>
+            </select>
+          </label>
+          <label>名称<input id="ch-name" value="火山方舟 · Seedance Lite" /></label>
+          <label>provider<input id="ch-provider" value="ark" /></label>
+          <label>model_id<input id="ch-model" value="seedance-lite" /></label>
+          <label>upstream_model<input id="ch-upstream" value="doubao-seedance-1-0-lite-t2v-250428" /></label>
+          <label>每秒扣费<input id="ch-cost" type="number" value="1" /></label>
+          <button type="button" class="primary" id="ch-add" style="margin-top:.85rem">添加渠道</button>
+        </div>
+        <div class="panel">
+          <h2>渠道列表</h2>
+          ${state.channels.map(c=>`
+            <div class="channel-card">
+              <div class="row"><strong>${esc(c.name)}</strong>
+                <span class="${c.enabled?"chip-ok":"chip-off"}">${c.enabled?"启用":"停用"}</span></div>
+              <div class="meta">${esc(c.provider)} · ${esc(c.model_id)} · ${c.cost}/积分/秒</div>
+              <button type="button" class="ghost" data-toggle-ch="${c.id}">${c.enabled?"停用":"启用"}</button>
+              <button type="button" class="ghost" data-key="${c.id}">改 Key</button>
+            </div>`).join("")}
+        </div>
+        <div class="panel" style="grid-column:1/-1">
+          <h2>用户余额</h2>
+          <table class="table"><thead><tr><th>邮箱</th><th>角色</th><th>余额</th><th></th></tr></thead>
+          <tbody>${state.users.map((u,i)=>`<tr>
+            <td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${money(u.balance)}</td>
+            <td>
+              <button type="button" class="ghost" data-u="${i}">改余额</button>
+              <button type="button" class="ghost" data-ledger="${i}">流水</button>
+            </td>
+          </tr>`).join("")}</tbody></table>
+        </div>
+      </div>`;
+  }
+};
+
+function bindPage(){
+  const p=$("page");
+  const qEl=p.querySelector("#ws-q");
+  qEl?.addEventListener("input", e=>{
+    const caret=e.target.selectionStart;
+    state.query=e.target.value;
+    setRoute("workspace");
+    const nq=$("page").querySelector("#ws-q");
+    if(nq){ nq.focus(); nq.setSelectionRange(caret, caret); }
+  });
+  p.querySelector("#ws-filter")?.addEventListener("change", e=>{ state.filter=e.target.value; setRoute("workspace"); });
+  p.querySelector("#btn-new")?.addEventListener("click", openNew);
+  p.querySelector("#btn-new-card")?.addEventListener("click", openNew);
+  p.querySelectorAll("[data-open]").forEach(el=>el.addEventListener("click", e=>{
+    if(e.target.closest(".more, .more-menu")) return;
+    openProject(el.dataset.open);
+  }));
+  p.querySelectorAll("[data-menu]").forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const i=Number(b.dataset.menu);
+    state.menu = state.menu===i ? -1 : i;
+    setRoute("workspace");
+  });
+  p.querySelectorAll("[data-dup]").forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const src=state.projects.find(x=>x.id===b.dataset.dup);
+    state.projects.unshift({...src, id:"p"+Date.now(), name:src.name+" 副本", status:"draft", cover:src.cover||"", updated:"刚刚", tpl:src.tpl, aspect:src.aspect, brand:src.brand});
+    state.menu=-1; setRoute("workspace"); toast("已复制项目");
+  });
+  p.querySelectorAll("[data-del]").forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    if(!confirm("删除项目将去掉画布、当前成片和本项目素材。确定？")) return;
+    state.assets=state.assets.filter(a=>a.project!==b.dataset.del);
+    state.projects=state.projects.filter(x=>x.id!==b.dataset.del);
+    state.menu=-1; setRoute("workspace"); toast("已删除项目");
+  });
+  p.querySelectorAll("[data-use-tpl]").forEach(b=>b.onclick=()=>useTpl(b.dataset.useTpl));
+  p.querySelectorAll("[data-tag]").forEach(b=>b.onclick=()=>{ state.showTag=b.dataset.tag; setRoute("templates"); });
+  p.querySelectorAll("[data-promo]").forEach(b=>b.onclick=()=>{
+    const promo=PROMOS.find(x=>x.id===b.dataset.promo);
+    useTpl("quick_shot", promo.title, promo.prompt);
+  });
+  p.querySelector("[data-go]")?.addEventListener("click", ()=>setRoute("workspace"));
+  p.querySelector("#open-makeup")?.addEventListener("click", ()=>useTpl("beauty_linear"));
+  p.querySelectorAll("[data-toggle-ch]").forEach(b=>b.onclick=()=>{
+    const c=state.channels.find(x=>x.id==b.dataset.toggleCh);
+    c.enabled=!c.enabled; setRoute("admin"); toast(c.enabled?"已启用":"已停用");
+  });
+  p.querySelectorAll("[data-key]").forEach(b=>b.onclick=()=>{
+    const c=state.channels.find(x=>x.id==b.dataset.key);
+    c.key="****"+Math.random().toString(16).slice(2,6); setRoute("admin"); toast("已更新 Key（示意）");
+  });
+  p.querySelectorAll("[data-u]").forEach(b=>b.onclick=()=>{
+    const u=state.users[Number(b.dataset.u)];
+    const v=prompt("新余额", String(u.balance));
+    if(v==null) return;
+    u.balance=Number(v)||0;
+    if(u.email==="admin@example.com"){
+      const delta=u.balance-state.balance;
+      addSpend("超管调整余额", delta, "超管");
+    }
+    setRoute("admin"); toast("余额已更新");
+  });
+  p.querySelectorAll("[data-ledger]").forEach(b=>b.onclick=()=>{
+    state.modal = Number(b.dataset.ledger)===0 ? "balance" : "user-ledger";
+    renderModal();
+  });
+  const PRESET={
+    lite:{name:"火山方舟 · Seedance Lite", provider:"ark", model:"seedance-lite", upstream:"doubao-seedance-1-0-lite-t2v-250428", cost:1},
+    "25":{name:"火山方舟 · Seedance 2.5", provider:"ark", model:"seedance-2.5", upstream:"doubao-seedance-2-0-260128", cost:8},
+    mock:{name:"本地seedance模拟版", provider:"mock", model:"seedance-local-simulate", upstream:"local-simulate", cost:0},
+    agnes:{name:"Agnes AI Pavo", provider:"agnes", model:"agnes-pavo", upstream:"agnes-video-v2.0", cost:0}
+  };
+  p.querySelector("#ch-preset")?.addEventListener("change", e=>{
+    const x=PRESET[e.target.value]; if(!x) return;
+    $("ch-name").value=x.name; $("ch-provider").value=x.provider; $("ch-model").value=x.model;
+    $("ch-upstream").value=x.upstream; $("ch-cost").value=x.cost;
+  });
+  p.querySelector("#ch-add")?.addEventListener("click", ()=>{
+    state.channels.push({
+      id:Date.now(), name:$("ch-name").value, provider:$("ch-provider").value,
+      model_id:$("ch-model").value, upstream:$("ch-upstream").value,
+      key:"****new", cost:Number($("ch-cost").value)||0, priority:50, enabled:false
+    });
+    setRoute("admin"); toast("已添加渠道（默认停用）");
+  });
+  p.querySelector("#st-prompt")?.addEventListener("input", e=>{ state.studioPrompt=e.target.value; });
+  const stImg=p.querySelector("#st-img");
+  if(stImg) stImg.onclick=()=>toast("已选择参考图");
+  const stRun=p.querySelector("#st-run");
+  if(stRun) stRun.onclick=()=>runStudio();
+}
+
+function openNew(){ state.modal="new"; renderModal(); }
+function useTpl(id, name, briefText){
+  const t=TPL[id];
+  const proj={
+    id:"p"+Date.now(), name: name || t.name, brand:"SeeMe", aspect:"16:9",
+    status:"draft", cover:"", updated:"刚刚", tpl:id
+  };
+  state.projects.unshift(proj);
+  openProject(proj.id, briefText);
+  toast("已用模板新建项目");
+}
+function openProject(id, briefText){
+  const p=state.projects.find(x=>x.id===id) || state.projects[0];
+  loadTpl(p.tpl || "beauty_linear");
+  state.wf.projectId = p.id;
+  state.wf.name = p.name;
+  if(briefText){
+    const brief=state.wf.nodes.find(n=>n.id==="brief"||n.type==="TextAsset");
+    if(brief) brief.text=briefText;
+  }
+  $("wf-name").value = state.wf.name;
+  $("view-canvas").classList.remove("hidden");
+  renderWorkflow();
+}
+function runStudio(){
+  if(!hasModel()){ toast("暂无可用模型"); return; }
+  const id=state.runSeq++;
+  const mock=state.channels.some(c=>c.enabled && c.cost===0);
+  const cost=mock?0:5;
+  addSpend(`工作室出片 #${id}`, -cost, "扣费");
+  state.studioJob={id, status:"running", cost};
+  setRoute("studio");
+  setTimeout(()=>{
+    if(!state.studioJob || state.studioJob.id!==id) return;
+    state.studioJob.status="succeeded";
+    setRoute("studio");
+    toast("工作室出片完成");
+  }, 1400);
+}
+
+/* ---------- Modal ---------- */
+function closeModal(){ state.modal=null; $("modal").classList.add("hidden"); $("modal").innerHTML=""; }
+function renderModal(){
+  const box=$("modal");
+  if(!state.modal){ closeModal(); return; }
+  box.classList.remove("hidden");
+  if(state.modal==="balance" || state.modal==="user-ledger"){
+    const rows = state.modal==="user-ledger"
+      ? [{ title:"期初余额", amount:20, kind:"期初", at:"8 月 1 日" }]
+      : state.spends;
+    box.innerHTML=`<div class="modal" onclick="event.stopPropagation()">
+      <h2>消费明细</h2>
+      <div class="ledger-list">${rows.map(s=>`<div class="ledger-row">
+        <div><strong>${esc(s.title)}</strong><div class="muted">${esc(s.kind||"")} · ${esc(s.at)}</div></div>
+        <div class="ledger-amt ${s.amount<0?"is-debit":"is-credit"}">${s.amount>0?"+":""}${money(s.amount)}</div>
+      </div>`).join("")}</div>
+      <div class="modal-actions"><button class="primary" type="button" id="m-close">关闭</button></div>
+    </div>`;
+  } else if(state.modal==="new"){
+    box.innerHTML=`<div class="modal" onclick="event.stopPropagation()">
+      <h2>新建项目</h2>
+      <label>名称<input id="newName" placeholder="例如：秋季底妆新品 TVC" /></label>
+      <label>品牌<input id="newBrand" value="SeeMe" /></label>
+      <label>起始方式</label>
+      <div class="mode-grid">
+        <button type="button" class="mode-card ${state.newMode==="blank"?"active":""}" data-mode="blank"><strong>＋ 空白项目</strong><small>单镜头快出（Brief + 图）</small></button>
+        <button type="button" class="mode-card ${state.newMode==="template"?"active":""}" data-mode="template"><strong>▣ 官方模板</strong><small>预填官方美妆节点</small></button>
+      </div>
+      ${state.newMode==="template"?`<label>模板<select id="newTpl">
+        <option value="beauty_linear">美妆线性链路</option>
+        <option value="standard">标准美妆 TVC</option>
+        <option value="quick_shot">单镜头快出</option>
+      </select></label>`:""}
+      <div class="modal-actions">
+        <button class="ghost" type="button" id="m-close">取消</button>
+        <button class="primary" type="button" id="m-create">创建并打开</button>
+      </div>
+    </div>`;
+  }
+  box.onclick = (e)=>{ if(e.target===box) closeModal(); };
+  box.querySelector("#m-close")?.addEventListener("click", closeModal);
+  box.querySelectorAll("[data-mode]").forEach(b=>b.onclick=()=>{ state.newMode=b.dataset.mode; renderModal(); });
+  box.querySelector("#m-create")?.addEventListener("click", ()=>{
+    const name=$("newName").value.trim() || "未命名项目";
+    const brand=$("newBrand").value.trim() || "SeeMe";
+    const tpl=state.newMode==="template" ? ($("newTpl")?.value || "beauty_linear") : "quick_shot";
+    const proj={ id:"p"+Date.now(), name, brand, aspect:"16:9", status:"draft", cover:"", updated:"刚刚", tpl };
+    state.projects.unshift(proj);
+    closeModal();
+    openProject(proj.id);
+  });
+}
+
+/* ---------- Canvas ---------- */
+function loadTpl(id){
+  const t=TPL[id] || TPL.beauty_linear;
+  state.wf.tpl=id;
+  state.wf.nodes = t.nodes.map(n=>({...n}));
+  state.wf.edges = t.edges.map(e=>e.slice());
+  state.wf.selected = state.wf.nodes[0]?.id || null;
+  document.querySelectorAll(".tpl-btn").forEach(b=>b.classList.toggle("active", b.dataset.tpl===id));
+}
+function nodeCenter(n){ return {x:n.x+130, y:n.y+80}; }
+function drawEdges(){
+  $("cv-edges").innerHTML = state.wf.edges.map(([a,b])=>{
+    const na=state.wf.nodes.find(n=>n.id===a), nb=state.wf.nodes.find(n=>n.id===b);
+    if(!na||!nb) return "";
+    const p1=nodeCenter(na), p2=nodeCenter(nb);
+    const mid=(p1.x+p2.x)/2;
+    return `<path d="M${p1.x},${p1.y} C${mid},${p1.y} ${mid},${p2.y} ${p2.x},${p2.y}" stroke="#d4578a" stroke-width="2.5" fill="none" opacity=".75"/>`;
+  }).join("");
+}
+function toneOf(type){
+  if(type==="TextAsset") return "text";
+  if(type==="ImageAsset") return "image";
+  if(type==="ImageToVideo" || type==="VideoAsset") return "video";
+  return "tool";
+}
+function kindLabel(type){
+  return ({TextAsset:"文本",ImageAsset:"图片",ImageToVideo:"图生视频",VideoTrim:"裁时长",VideoMux:"拼接",VideoAsset:"视频"})[type]||type;
+}
+function renderMinimap(){
+  const box=$("cv-minimap-world"); box.innerHTML="";
+  state.wf.nodes.forEach(n=>{
+    const d=document.createElement("div"); d.className="cv-minimap-node";
+    d.style.left=(n.x/18)+"px"; d.style.top=(n.y/18)+"px";
+    box.appendChild(d);
+  });
+}
+function renderInspector(){
+  const n=state.wf.nodes.find(x=>x.id===state.wf.selected);
+  const box=$("wf-inspector");
+  if(!n){
+    box.innerHTML=`<h2 style="font-size:1.05rem">选择节点</h2><p class="muted">点击画布节点查看示意字段。</p><div id="ins-fields"></div>`;
+    return;
+  }
+  const fields = n.type==="TextAsset"
+    ? `<label>文本角色<select id="ins-role"><option>brief</option><option>script</option><option>prompt</option></select></label>
+       <label>内容<textarea id="ins-text" rows="5">${esc(n.text||"")}</textarea></label>`
+    : n.type==="ImageAsset"
+    ? `<label>妆前提示词<input value="素颜自然肤质" /></label><label>妆后提示词<input value="精致妆容，气色明亮" /></label>`
+    : n.type==="ImageToVideo"
+    ? `<label>模型<select><option>seedance-local-simulate</option><option>seedance-lite</option><option>seedance-2.5</option></select></label>
+       <label>时长（秒）<input type="number" value="5" /></label>`
+    : n.type==="VideoTrim"
+    ? `<label>trim_start<input type="number" value="0" /></label><label>trim_end<input type="number" value="4" /></label>`
+    : n.type==="VideoMux"
+    ? `<label>画幅<select><option>16:9</option><option>9:16</option><option>1:1</option></select></label>`
+    : `<p class="muted">成片载体。成功后覆盖为当前成片。</p>`;
+  box.innerHTML=`<p class="eyebrow">${kindLabel(n.type)}</p>
+    <h2 style="font-size:1.05rem">${esc(n.label)}</h2>
+    <p class="muted">id: ${esc(n.id)} · ${esc(n.type)}</p>
+    ${fields}
+    ${["ImageToVideo","VideoTrim","VideoMux"].includes(n.type)?`<button type="button" class="primary" id="ins-gen" style="margin-top:.8rem">生成此节点</button>`:""}
+    <button type="button" class="danger-btn" id="ins-del" style="margin-top:.5rem">删除节点</button>`;
+  box.querySelector("#ins-text")?.addEventListener("input", e=>{ n.text=e.target.value; });
+  box.querySelector("#ins-gen")?.addEventListener("click", ()=>{
+    n.status="running"; renderNodes();
+    setTimeout(()=>{ n.status="succeeded"; renderNodes(); toast("节点生成完成（示意，无上游）"); }, 1100);
+  });
+  box.querySelector("#ins-del")?.addEventListener("click", ()=>{
+    state.wf.nodes=state.wf.nodes.filter(x=>x.id!==n.id);
+    state.wf.edges=state.wf.edges.filter(([a,b])=>a!==n.id && b!==n.id);
+    state.wf.selected=state.wf.nodes[0]?.id||null;
+    renderWorkflow();
+  });
+}
+function renderNodes(){
+  const host=$("cv-nodes");
+  host.innerHTML = state.wf.nodes.map(n=>{
+    const tone=toneOf(n.type);
+    return `<div class="cv-node ${state.wf.selected===n.id?"selected":""} ${n.status==="running"?"st-running":""}" data-nid="${n.id}" style="left:${n.x}px;top:${n.y}px">
+      <div class="cv-card">
+        <div class="cv-card-top"><span class="cv-kind tone-${tone}">${kindLabel(n.type)}</span>
+          ${n.status?`<span class="status status-${n.status}">${statusLabel(n.status)}</span>`:""}</div>
+        <div class="cv-media">${esc(n.text||kindLabel(n.type))}</div>
+        <div class="cv-card-foot"><div class="cv-node-name">${esc(n.label)}</div>
+          <div class="cv-port-hints"><span>in</span><span>out</span></div></div>
+      </div>
+    </div>`;
+  }).join("");
+  host.querySelectorAll(".cv-node").forEach(el=>{
+    el.onmousedown = (e)=>{
+      state.wf.selected=el.dataset.nid; renderInspector();
+      host.querySelectorAll(".cv-node").forEach(n=>n.classList.toggle("selected", n===el));
+      const node=state.wf.nodes.find(x=>x.id===el.dataset.nid);
+      const sx=e.clientX, sy=e.clientY, ox=node.x, oy=node.y;
+      const move=(ev)=>{ node.x=ox+(ev.clientX-sx)/state.wf.zoom; node.y=oy+(ev.clientY-sy)/state.wf.zoom; el.style.left=node.x+"px"; el.style.top=node.y+"px"; drawEdges(); };
+      const up=()=>{ window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); renderMinimap(); };
+      window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+    };
+  });
+  drawEdges(); renderMinimap();
+}
+function renderWorkflow(){
+  $("cv-world").style.transform = `scale(${state.wf.zoom})`;
+  $("wf-queue").textContent = state.wf.running ? "生成中（同时一只）" : "队列空闲";
+  $("wf-cancel").disabled = !state.wf.running;
+  renderNodes(); renderInspector(); syncRunBlock();
+}
+
+$("wf-back").onclick = ()=>{
+  $("view-canvas").classList.add("hidden");
+  setRoute("workspace");
+};
+$("wf-save").onclick = ()=>{
+  const p=state.projects.find(x=>x.id===state.wf.projectId);
+  if(p){ p.name=state.wf.name; p.updated=nowLabel(); }
+  toast("已保存项目");
+};
+$("wf-run").onclick = ()=>{
+  const reason=cannotRunReason();
+  if(reason){ syncRunBlock(); toast(reason); return; }
+  if(state.wf.running) return;
+  const id=state.runSeq++;
+  const mock=state.channels.some(c=>c.enabled && c.cost===0);
+  const cost=mock?0:5;
+  state.pendingCharge=cost;
+  addSpend(`项目出片 #${id} 镜头`, -cost, "扣费");
+  state.wf.running=true;
+  const proj=state.projects.find(x=>x.id===state.wf.projectId);
+  if(proj) proj.status="running";
+  renderWorkflow();
+  state._runTimer=setTimeout(()=>{
+    state.wf.running=false;
+    state.pendingCharge=0;
+    state.wf.nodes.forEach(n=>{ if(["ImageToVideo","VideoTrim","VideoMux","VideoAsset"].includes(n.type)) n.status="succeeded"; });
+    if(proj){ proj.status="succeeded"; proj.cover="output"; proj.updated=nowLabel(); }
+    const old=state.assets.find(a=>a.project===state.wf.projectId && a.kind==="output");
+    if(old) old.name="当前成片.mp4";
+    else state.assets.unshift({id:"a"+Date.now(), kind:"output", name:"当前成片.mp4", project:state.wf.projectId});
+    renderWorkflow(); toast("出片完成");
+  }, 1600);
+};
+$("wf-cancel").onclick = ()=>{
+  clearTimeout(state._runTimer);
+  if(state.pendingCharge){
+    addSpend(`项目出片整单退款`, state.pendingCharge, "退款");
+    state.pendingCharge=0;
+  }
+  state.wf.running=false;
+  const proj=state.projects.find(x=>x.id===state.wf.projectId);
+  if(proj && proj.status==="running") proj.status="draft";
+  renderWorkflow(); toast("已取消");
+};
+$("wf-name").oninput = e=>{
+  state.wf.name=e.target.value;
+  const p=state.projects.find(x=>x.id===state.wf.projectId);
+  if(p) p.name=e.target.value;
+};
+$("dock-left-toggle").onclick = ()=> $("dock-left").classList.toggle("is-collapsed");
+$("dock-right-toggle").onclick = ()=> $("dock-right").classList.toggle("is-collapsed");
+function renderAssets(){
+  const box=$("asset-list"); if(!box) return;
+  const items=state.assets.filter(a=>state.assetKind==="all"||a.kind===state.assetKind);
+  const kindLabel={image:"图",video:"视频",output:"成片"};
+  box.innerHTML = items.map(a=>`<div class="asset-item"><strong>${esc(a.name)}</strong><small>${kindLabel[a.kind]||a.kind}
+    · <button type="button" class="linkish" data-copy-asset="${a.id}">复制到其他项目</button></small></div>`).join("") || `<p class="muted">暂无素材</p>`;
+  box.querySelectorAll("[data-copy-asset]").forEach(b=>b.onclick=()=>{
+    const other=state.projects.find(p=>p.name!==state.wf.name) || state.projects[0];
+    toast(other?`已复制到「${other.name}」（示意）`:"没有其他项目");
+  });
+}
+function setLeftTab(tab){
+  state.leftTab=tab;
+  document.querySelectorAll("[data-left-tab]").forEach(b=>b.classList.toggle("active", b.dataset.leftTab===tab));
+  $("dock-left-nodes").classList.toggle("hidden", tab!=="nodes");
+  $("dock-left-assets").classList.toggle("hidden", tab!=="assets");
+  $("dock-left-title").textContent = tab==="assets" ? "素材" : "节点";
+  if(tab==="assets") renderAssets();
+}
+document.querySelectorAll("[data-left-tab]").forEach(b=>b.onclick=()=>setLeftTab(b.dataset.leftTab));
+document.querySelectorAll("[data-akind]").forEach(b=>b.onclick=()=>{
+  state.assetKind=b.dataset.akind;
+  document.querySelectorAll("[data-akind]").forEach(x=>x.classList.toggle("active", x===b));
+  renderAssets();
+});
+$("asset-upload").onclick = ()=>{
+  state.assets.unshift({id:"a"+Date.now(), kind:"image", name:"上传参考图.jpg", project:"p1"});
+  renderAssets(); toast("已上传到本项目库（示意）");
+};
+$("cv-zoom-in").onclick = ()=>{ state.wf.zoom=Math.min(1.6, state.wf.zoom+0.1); renderWorkflow(); };
+$("cv-zoom-out").onclick = ()=>{ state.wf.zoom=Math.max(0.5, state.wf.zoom-0.1); renderWorkflow(); };
+$("cv-zoom-reset").onclick = ()=>{ state.wf.zoom=1; renderWorkflow(); };
+document.querySelectorAll(".tpl-btn").forEach(b=>b.onclick=()=>{
+  loadTpl(b.dataset.tpl); renderWorkflow(); toast("已套用模板到当前项目（示意）");
+});
+document.querySelectorAll(".palette-btn").forEach(b=>b.onclick=()=>{
+  const id="n"+Date.now();
+  state.wf.nodes.push({id, type:b.dataset.add, label:kindLabel(b.dataset.add), x:180+state.wf.nodes.length*20, y:240, text:"新建节点"});
+  state.wf.selected=id; renderWorkflow(); toast("已添加节点");
+});
+
+renderRail();
+loadTpl("beauty_linear");
+</script>
+</body>
+</html>

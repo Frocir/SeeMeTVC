@@ -121,7 +121,13 @@ async def _download(url: str, dest: Path) -> None:
             if candidate.is_file():
                 dest.write_bytes(candidate.read_bytes())
                 return
-        fetch = f"{get_settings().public_api_base_url.rstrip('/')}{raw}"
+        base = (get_settings().public_api_base_url or "").strip().rstrip("/")
+        if not base:
+            raise MediaOpsError(
+                "片段不在本机素材目录，且未配置 PUBLIC_API_BASE_URL，无法下载。"
+                "请使用项目内上传的视频，或在部署环境设置可访问的 API 根地址。"
+            )
+        fetch = f"{base}{raw}"
     else:
         fetch = raw
 
@@ -152,7 +158,8 @@ async def ensure_mock_demo_clip(duration_seconds: int = 5) -> str:
     duration_seconds = max(1, min(int(duration_seconds or 5), 15))
     mock_dir = uploads_root() / "_mock"
     mock_dir.mkdir(parents=True, exist_ok=True)
-    name = f"demo_{duration_seconds}s.mp4"
+    # v2 LocalSimulate: SMPTE bars (old clips were near-black / labeled MOCK)
+    name = f"demo_localsim_v2_{duration_seconds}s.mp4"
     path = mock_dir / name
     public = f"/uploads/_mock/{name}"
     if path.is_file() and path.stat().st_size > 1000:
@@ -160,35 +167,52 @@ async def ensure_mock_demo_clip(duration_seconds: int = 5) -> str:
 
     ffmpeg = _ffmpeg_bin()
     tmp_out = mock_dir / f"{name}.partial.mp4"
-    try:
-        await run_ffmpeg(
-            [
-                ffmpeg,
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                f"color=c=0x2a1a24:s=640x360:d={duration_seconds}",
-                "-f",
-                "lavfi",
-                "-i",
-                f"sine=f=440:d={duration_seconds}",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "28",
-                "-c:a",
-                "aac",
-                "-shortest",
-                "-movflags",
-                "+faststart",
-                str(tmp_out),
+
+    async def _encode(with_drawtext: bool) -> None:
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"smptebars=s=640x360:d={duration_seconds}",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=f=440:d={duration_seconds}",
+        ]
+        if with_drawtext:
+            cmd += [
+                "-vf",
+                (
+                    f"drawtext=text='LocalSimulate {duration_seconds}s':"
+                    "fontsize=36:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:"
+                    "box=1:boxcolor=black@0.45:boxborderw=12"
+                ),
             ]
-        )
+        cmd += [
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "28",
+            "-c:a",
+            "aac",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(tmp_out),
+        ]
+        await run_ffmpeg(cmd)
+
+    try:
+        try:
+            await _encode(True)
+        except MediaOpsError:
+            await _encode(False)
         if path.exists():
             path.unlink()
         tmp_out.replace(path)

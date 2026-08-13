@@ -36,9 +36,9 @@ class MeOut(UserOut):
 
 class ChannelCreate(BaseModel):
     name: str
-    provider: str = "fal"
+    provider: str = "ark"
     base_url: str = ""
-    api_key: str
+    api_key: str = ""
     model_id: str
     upstream_model: str
     cost_per_second: float = 1.0
@@ -81,6 +81,11 @@ class ModelOptionOut(BaseModel):
     model_id: str
     cost_per_second: float
     provider: str
+    label: str = ""
+    duration_min: int = 2
+    duration_max: int = 30
+    supports_audio: bool = False
+    supports_image: bool = True
 
 
 class GenerateIn(BaseModel):
@@ -120,6 +125,19 @@ class AdminUserOut(UserOut):
     pass
 
 
+class BalanceEntryOut(BaseModel):
+    id: int
+    amount: float
+    balance_after: float
+    kind: str
+    title: str
+    ref_type: str
+    ref_id: int | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 # ── Workflow (ComfyUI-like DAG) ──────────────────────────────────────────────
 
 
@@ -135,23 +153,48 @@ class WorkflowGraphIn(BaseModel):
 
 
 class WorkflowCreateIn(BaseModel):
-    name: str = Field(default="未命名工作流", max_length=200)
+    name: str = Field(default="未命名项目", max_length=200)
+    brand: str | None = Field(default=None, max_length=120)
     graph: WorkflowGraphIn | None = None
 
 
 class WorkflowUpdateIn(BaseModel):
     name: str | None = Field(default=None, max_length=200)
+    brand: str | None = Field(default=None, max_length=120)
     graph: WorkflowGraphIn | None = None
 
 
 class WorkflowOut(BaseModel):
     id: int
     name: str
+    brand: str = "SeeMe"
+    cover_url: str | None = None
     graph: dict
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ProjectAssetOut(BaseModel):
+    id: int
+    workflow_id: int
+    kind: str
+    url: str
+    filename: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ProjectAssetCreateIn(BaseModel):
+    url: str
+    kind: str | None = None
+    filename: str = ""
+
+
+class ProjectAssetCopyIn(BaseModel):
+    target_workflow_id: int
 
 
 class WorkflowRunCreateIn(BaseModel):

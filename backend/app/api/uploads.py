@@ -159,7 +159,12 @@ async def async_resolve_image_for_upstream(image_url: str | None) -> str | None:
 
     fetch_url = image_url
     if image_url.startswith("/"):
-        base = get_settings().public_asset_base_url.rstrip("/")
+        base = (get_settings().public_asset_base_url or "").rstrip("/")
+        if not base:
+            raise RuntimeError(
+                "参考图是站点内相对地址，且未配置 PUBLIC_ASSET_BASE_URL。"
+                "请改用「上传」本地文件。"
+            )
         fetch_url = f"{base}{image_url}"
 
     try:

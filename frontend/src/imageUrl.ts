@@ -1,4 +1,4 @@
-import { uploadImage } from "./api";
+import { apiUrl, uploadImage } from "./api";
 
 function isPrivateHostname(host: string): boolean {
   const h = host.toLowerCase();
@@ -55,7 +55,9 @@ export async function ensureUpstreamImageUrl(url: string | null | undefined): Pr
     return url;
   }
 
-  const fetchUrl = absolute.pathname + absolute.search;
+  const fetchUrl = absolute.pathname.startsWith("/uploads/")
+    ? apiUrl(absolute.pathname + absolute.search)
+    : absolute.pathname + absolute.search;
   const res = await fetch(fetchUrl);
   if (!res.ok) {
     throw new Error(`无法读取参考图（${res.status}），请重新上传或换一张`);

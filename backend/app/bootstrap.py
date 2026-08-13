@@ -6,16 +6,35 @@ from app.models import Channel, User, UserRole
 from app.security import hash_password
 
 AGNES_CHANNEL_NAME = "Agnes AI Pavo (free)"
-MOCK_CHANNEL_NAME = "Seedance Lite (mock)"
-# Local demo must win /api/models sort (priority DESC) over paid/free upstreams.
-MOCK_PRIORITY = 100
+LOCAL_SIM_CHANNEL_NAME = "本地seedance模拟版（Seedance LocalSimulate）"
+LITE_CHANNEL_NAME = "Seedance Lite（火山方舟）"
+SEEDANCE25_CHANNEL_NAME = "Seedance 2.5（火山方舟）"
+LOCAL_SIM_MODEL_ID = "seedance-local-simulate"
+
+LITE_PRIORITY = 80
+SEEDANCE25_PRIORITY = 70
+LOCAL_SIM_PRIORITY = 40
 AGNES_PRIORITY = 10
-FAL_PRIORITY = 5
+LOCAL_SIM_PRIORITY_OFFLINE = 100
+
+ARK_BASE = "https://ark.cn-beijing.volces.com"
+# 默认可被超管改成控制台里的「推理接入点 ID」(ep-xxx)
+LITE_UPSTREAM = "doubao-seedance-1-0-lite-t2v-250428"
+SEEDANCE25_UPSTREAM = "doubao-seedance-2-0-260128"
+
+_LEGACY_LOCAL_NAMES = ("Seedance Mock (local)", "Seedance Lite (mock)")
+_LEGACY_LOCAL_MODEL_IDS = ("seedance-mock",)
+_LEGACY_LITE_NAMES = ("Seedance Lite (fal)", "Seedance Lite (fal)")
+_LEGACY_25_NAMES = ("Seedance 2.5 (fal)", "Seedance 2.5 (disabled)")
 
 
-def _looks_like_agnes_key(key: str) -> bool:
+def _looks_like_real_key(key: str) -> bool:
     k = (key or "").strip()
-    return bool(k) and k not in {"replace-me", "YOUR_API_KEY", "sk-your-agnes-key", "sk-xxx"}
+    if not k:
+        return False
+    if k in {"replace-me", "YOUR_API_KEY", "FAL_KEY", "ARK_API_KEY", "mock:demo", "sk-your-agnes-key", "sk-xxx"}:
+        return False
+    return len(k) >= 8
 
 
 async def ensure_bootstrap_data(db: AsyncSession) -> None:
@@ -32,112 +51,232 @@ async def ensure_bootstrap_data(db: AsyncSession) -> None:
         )
         db.add(admin)
 
-    channel_result = await db.execute(select(Channel).limit(1))
-    if channel_result.scalar_one_or_none() is None:
+    await _ensure_seedance_channels(db)
+    await _ensure_agnes_channel(db)
+    await _heal_channels(db)
+    await db.commit()
+
+
+async def _get_by_name(db: AsyncSession, name: str) -> Channel | None:
+    result = await db.execute(select(Channel).where(Channel.name == name))
+    return result.scalar_one_or_none()
+
+
+async def _any_enabled_ark(db: AsyncSession) -> bool:
+    result = await db.execute(
+        select(Channel).where(
+            Channel.provider.in_(("ark", "volc", "volcengine", "fal")),
+            Channel.enabled.is_(True),
+        )
+    )
+    return any(
+        _looks_like_real_key(ch.api_key) and ch.model_id in {"seedance-lite", "seedance-2.5"}
+        for ch in result.scalars().all()
+    )
+
+
+async def _ensure_seedance_channels(db: AsyncSession) -> None:
+    """Seedance Lite / 2.5 via 火山方舟 Ark. Keys only via 超管 UI."""
+
+    local = await _get_by_name(db, LOCAL_SIM_CHANNEL_NAME)
+    if local is None:
+        for legacy_name in _LEGACY_LOCAL_NAMES:
+            legacy = await _get_by_name(db, legacy_name)
+            if legacy is not None:
+                legacy.name = LOCAL_SIM_CHANNEL_NAME
+                local = legacy
+                break
+    if local is None:
+        result = await db.execute(
+            select(Channel).where(Channel.provider == "mock").order_by(Channel.id.asc()).limit(1)
+        )
+        local = result.scalar_one_or_none()
+
+    local_remark = (
+        "本地 ffmpeg 样片（离线演示，非真实 Seedance）。"
+        "真正 Seedance 请超管填写火山方舟 ARK_API_KEY 并启用 Lite / 2.5。"
+    )
+    if local is None:
         db.add(
             Channel(
-                name=MOCK_CHANNEL_NAME,
+                name=LOCAL_SIM_CHANNEL_NAME,
                 provider="mock",
                 base_url="",
-                api_key="mock:demo",
-                model_id="seedance-lite",
-                upstream_model="fal-ai/bytedance/seedance/v1/lite/text-to-video",
-                cost_per_second=1.0,
-                priority=MOCK_PRIORITY,
+                api_key="",
+                model_id=LOCAL_SIM_MODEL_ID,
+                upstream_model="local-simulate",
+                cost_per_second=0.0,
+                priority=LOCAL_SIM_PRIORITY_OFFLINE,
                 enabled=True,
-                remark="本地演示渠道（默认优先）。替换为真实 fal Key 后改 provider=fal",
+                remark=local_remark,
             )
         )
+    else:
+        local.name = LOCAL_SIM_CHANNEL_NAME
+        local.provider = "mock"
+        local.model_id = LOCAL_SIM_MODEL_ID
+        local.upstream_model = "local-simulate"
+        local.enabled = True
+        local.remark = local_remark
+
+    await _ensure_ark_model_channel(
+        db,
+        name=LITE_CHANNEL_NAME,
+        legacy_names=_LEGACY_LITE_NAMES,
+        model_id="seedance-lite",
+        upstream=LITE_UPSTREAM,
+        priority=LITE_PRIORITY,
+        cost=1.0,
+        remark=(
+            "火山方舟 Seedance 1.0 Lite。"
+            "Base URL: https://ark.cn-beijing.volces.com ；"
+            "upstream_model 填模型 ID 或推理接入点 ep-xxx。"
+            "超管「改 Key」写入 ARK_API_KEY 后启用。无原生音频。"
+        ),
+    )
+    await _ensure_ark_model_channel(
+        db,
+        name=SEEDANCE25_CHANNEL_NAME,
+        legacy_names=_LEGACY_25_NAMES,
+        model_id="seedance-2.5",
+        upstream=SEEDANCE25_UPSTREAM,
+        priority=SEEDANCE25_PRIORITY,
+        cost=8.0,
+        remark=(
+            "火山方舟 Seedance 2.x（产品名 2.5）。"
+            "默认 generate_audio；时长约 4–30 秒。"
+            "upstream_model 可改为你控制台的接入点 ID。超管「改 Key」后启用。"
+        ),
+    )
+
+
+async def _ensure_ark_model_channel(
+    db: AsyncSession,
+    *,
+    name: str,
+    legacy_names: tuple[str, ...],
+    model_id: str,
+    upstream: str,
+    priority: int,
+    cost: float,
+    remark: str,
+) -> None:
+    ch = await _get_by_name(db, name)
+    if ch is None:
+        for legacy_name in legacy_names:
+            legacy = await _get_by_name(db, legacy_name)
+            if legacy is not None:
+                legacy.name = name
+                ch = legacy
+                break
+    if ch is None:
+        result = await db.execute(
+            select(Channel)
+            .where(Channel.model_id == model_id)
+            .order_by(Channel.id.asc())
+            .limit(1)
+        )
+        ch = result.scalar_one_or_none()
+        # Don't steal mock rows
+        if ch is not None and ch.provider == "mock":
+            ch = None
+
+    if ch is None:
         db.add(
             Channel(
-                name="Seedance 2.5 (disabled)",
-                provider="fal",
-                base_url="https://queue.fal.run",
-                api_key="replace-me",
-                model_id="seedance-2.5",
-                upstream_model="bytedance/seedance-2.5/text-to-video",
-                cost_per_second=8.0,
-                priority=FAL_PRIORITY,
+                name=name,
+                provider="ark",
+                base_url=ARK_BASE,
+                api_key="",
+                model_id=model_id,
+                upstream_model=upstream,
+                cost_per_second=cost,
+                priority=priority,
                 enabled=False,
-                remark="启用前请填入真实 API Key",
+                remark=remark,
             )
         )
+        return
 
-    # Always ensure free Agnes/Pavo channel exists.
-    # Key source: AGNES_API_KEY / settings.agnes_api_key (no shared public trial token exists).
-    # Channel stays disabled by default; super admin enables after verifying the key.
-    agnes_key = settings.agnes_api_key.strip() or "replace-me"
-    agnes_result = await db.execute(select(Channel).where(Channel.name == AGNES_CHANNEL_NAME))
-    agnes = agnes_result.scalar_one_or_none()
+    ch.name = name
+    ch.provider = "ark"
+    ch.base_url = ARK_BASE
+    ch.model_id = model_id
+    # Migrate away from fal upstream paths
+    um = (ch.upstream_model or "").strip()
+    if (not um) or "fal-ai/" in um or um.startswith("bytedance/") or "queue.fal" in um:
+        ch.upstream_model = upstream
+    ch.priority = max(int(ch.priority or 0), priority)
+    ch.remark = remark
+    # Keep enabled if already had a real key; otherwise stay disabled
+    if not _looks_like_real_key(ch.api_key):
+        ch.enabled = False
+
+
+async def _ensure_agnes_channel(db: AsyncSession) -> None:
+    settings = get_settings()
+    agnes = await _get_by_name(db, AGNES_CHANNEL_NAME)
     if agnes is None:
         db.add(
             Channel(
                 name=AGNES_CHANNEL_NAME,
                 provider="agnes",
                 base_url=settings.agnes_base_url.rstrip("/") or "https://api.agnes-ai.cn",
-                api_key=agnes_key,
+                api_key="",
                 model_id="agnes-pavo",
                 upstream_model=settings.agnes_upstream_model or "agnes-video-v2.0",
                 cost_per_second=0.0,
                 priority=AGNES_PRIORITY,
                 enabled=False,
                 remark=(
-                    "免费 Agnes AI Pavo 格式（agnes-video-v2.0）。默认关闭。"
-                    "国内默认 Base URL: https://api.agnes-ai.cn ；"
-                    "写入 AGNES_API_KEY 或超管「改 Key」后启用。"
-                    "优先级低于 mock，避免本地演示默认撞限流。"
+                    "免费 Agnes AI Pavo（agnes-video-v2.0）。默认关闭。"
+                    "超管「改 Key」写入后启用。"
                 ),
             )
         )
-    elif _looks_like_agnes_key(settings.agnes_api_key) and (
-        not _looks_like_agnes_key(agnes.api_key) or agnes.api_key == "replace-me"
-    ):
-        # Refresh placeholder key from env without forcing enable.
-        agnes.api_key = agnes_key
-        agnes.base_url = settings.agnes_base_url.rstrip("/") or agnes.base_url
-        agnes.upstream_model = settings.agnes_upstream_model or agnes.upstream_model
-
-    await _heal_local_demo_channels(db)
-    await db.commit()
+    else:
+        if not (agnes.base_url or "").strip():
+            agnes.base_url = settings.agnes_base_url.rstrip("/") or "https://api.agnes-ai.cn"
+        if not (agnes.upstream_model or "").strip():
+            agnes.upstream_model = settings.agnes_upstream_model or "agnes-video-v2.0"
 
 
-async def _heal_local_demo_channels(db: AsyncSession) -> None:
-    """Keep mock as the default local model even on DBs toggled by earlier admin ops."""
-    mock_result = await db.execute(
-        select(Channel).where(Channel.provider == "mock").order_by(Channel.id.asc()).limit(1)
+async def _heal_channels(db: AsyncSession) -> None:
+    has_ark = await _any_enabled_ark(db)
+
+    result = await db.execute(select(Channel))
+    for ch in result.scalars().all():
+        if not _looks_like_real_key(ch.api_key):
+            ch.api_key = ""
+
+    result = await db.execute(select(Channel).where(Channel.provider == "mock"))
+    for local in result.scalars().all():
+        if local.model_id in {"seedance-lite", "seedance-2.5", *_LEGACY_LOCAL_MODEL_IDS}:
+            local.model_id = LOCAL_SIM_MODEL_ID
+        local.name = LOCAL_SIM_CHANNEL_NAME
+        local.upstream_model = "local-simulate"
+        local.priority = LOCAL_SIM_PRIORITY if has_ark else LOCAL_SIM_PRIORITY_OFFLINE
+        local.enabled = True
+
+    # Any leftover fal seedance → ark
+    result = await db.execute(
+        select(Channel).where(
+            Channel.provider == "fal",
+            Channel.model_id.in_(("seedance-lite", "seedance-2.5")),
+        )
     )
-    mock = mock_result.scalar_one_or_none()
-    if mock is None:
-        db.add(
-            Channel(
-                name=MOCK_CHANNEL_NAME,
-                provider="mock",
-                base_url="",
-                api_key="mock:demo",
-                model_id="seedance-lite",
-                upstream_model="fal-ai/bytedance/seedance/v1/lite/text-to-video",
-                cost_per_second=1.0,
-                priority=MOCK_PRIORITY,
-                enabled=True,
-                remark="本地演示渠道（默认优先）。替换为真实 fal Key 后改 provider=fal",
-            )
-        )
-        await db.flush()
-        mock_result = await db.execute(
-            select(Channel).where(Channel.provider == "mock").order_by(Channel.id.asc()).limit(1)
-        )
-        mock = mock_result.scalar_one_or_none()
+    for ch in result.scalars().all():
+        ch.provider = "ark"
+        ch.base_url = ARK_BASE
+        if ch.model_id == "seedance-lite":
+            ch.name = LITE_CHANNEL_NAME
+            if "fal" in (ch.upstream_model or "") or "bytedance/" in (ch.upstream_model or ""):
+                ch.upstream_model = LITE_UPSTREAM
+        else:
+            ch.name = SEEDANCE25_CHANNEL_NAME
+            if "fal" in (ch.upstream_model or "") or "bytedance/" in (ch.upstream_model or ""):
+                ch.upstream_model = SEEDANCE25_UPSTREAM
 
-    if mock is not None:
-        mock.enabled = True
-        if int(mock.priority or 0) < MOCK_PRIORITY:
-            mock.priority = MOCK_PRIORITY
-
-    agnes_result = await db.execute(select(Channel).where(Channel.name == AGNES_CHANNEL_NAME))
-    agnes = agnes_result.scalar_one_or_none()
-    if agnes is not None:
-        # Migrate old bootstrap priority (20) under mock; never outrank mock.
-        if mock is not None and int(agnes.priority or 0) >= int(mock.priority or 0):
-            agnes.priority = AGNES_PRIORITY
-        elif int(agnes.priority or 0) > AGNES_PRIORITY:
-            agnes.priority = AGNES_PRIORITY
+    agnes = await _get_by_name(db, AGNES_CHANNEL_NAME)
+    if agnes is not None and int(agnes.priority or 0) > AGNES_PRIORITY:
+        agnes.priority = AGNES_PRIORITY
