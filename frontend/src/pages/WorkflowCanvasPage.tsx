@@ -17,6 +17,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import {
   api,
+  expandScenesToNodes,
   isActiveRun,
   isTerminalRun,
   STATUS_LABEL,
@@ -217,8 +218,8 @@ export default function WorkflowCanvasPage() {
 
   const onConnect = useCallback(
     (c: Connection) => {
-      const wired = inferConnectionHandles(c, nodes, edges);
-      if (!isValidPortConnection(wired, nodes, edges)) return;
+      const wired = inferConnectionHandles(c, nodes, edges, contracts);
+      if (!isValidPortConnection(wired, nodes, edges, contracts)) return;
       const nextEdges = addEdge(
         {
           ...wired,
@@ -235,7 +236,7 @@ export default function WorkflowCanvasPage() {
         return syncWiredData(stale, nextEdges);
       });
     },
-    [setEdges, setNodes, edges, nodes],
+    [setEdges, setNodes, edges, nodes, contracts],
   );
 
   function addNode(type: WfNodeType, extra?: Partial<WfData>) {
@@ -418,6 +419,28 @@ export default function WorkflowCanvasPage() {
       throw e;
     } finally {
       if (!opts?.silent) setBusy(false);
+    }
+  }
+
+  async function expandSelectedScenes(mode: "silent" | "with_image" | "with_tts" | "full_tvc") {
+    if (!workflowId || !selectedId || agentLocked) return;
+    setBusy(true);
+    setError("");
+    try {
+      await saveDraft({ silent: true });
+      const out = await expandScenesToNodes(workflowId, selectedId, mode);
+      const mid = models[0]?.model_id || "";
+      const g = fromApiGraph(out.graph, mid);
+      setNodes(g.nodes);
+      setEdges(g.edges);
+      lastSavedRef.current = JSON.stringify(toApiGraph(g.nodes, g.edges));
+      setSelectedId(out.final_node_id || out.created_node_ids[0] || selectedId);
+      setAssetTick((n) => n + 1);
+      setQueueNote(`已从分镜生成 ${out.created_node_ids.length} 个节点`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "展开分镜失败");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -851,6 +874,14 @@ export default function WorkflowCanvasPage() {
                   : undefined
               }
               canGenerate={selectedCanGenerate && !busy && !agentLocked && !(run && isActiveRun(run.status))}
+              onExpandScenes={(mode) => void expandSelectedScenes(mode)}
+              canExpandScenes={
+                normalizeNodeType(selected.data.nodeType) === "VideoReversePrompt" &&
+                Array.isArray(selected.data.scenes) &&
+                selected.data.scenes.length > 0 &&
+                !busy &&
+                !agentLocked
+              }
               onDelete={() => {
                 if (agentLocked) return;
                 setNodes((ns) => ns.filter((n) => n.id !== selectedId));

@@ -545,7 +545,7 @@ export default function AdminPage() {
                     <span>{ch.provider}</span>
                     <span>Key {ch.api_key_masked}</span>
                     <span>优先级 {ch.priority}</span>
-                    <span>{ch.cost_per_second}/秒</span>
+                    <span>{ch.cost_per_second}{ch.kind === "image" ? "/张" : "/秒"}</span>
                   </div>
                   {ch.remark && <p className="admin-row-note">{ch.remark}</p>}
                   {probes[ch.id] && (
@@ -710,7 +710,7 @@ export default function AdminPage() {
               </label>
             ))}
             <label>
-              每秒消耗余额（Agnes 免费可为 0）
+              {form.kind === "image" ? "每张图片消耗余额" : "每秒消耗余额（Agnes 免费可为 0）"}
               <input
                 type="number"
                 step="0.01"
@@ -720,7 +720,9 @@ export default function AdminPage() {
               />
             </label>
             <p className="muted" style={{ marginTop: "-0.35rem" }}>
-              用户侧按「秒 × 此单价」扣费；请与上游真实成本大致对齐。
+              {form.kind === "image"
+                ? "image 渠道按单张图片扣费；TextToImage 生成前会进入确认卡。"
+                : "用户侧按「秒 × 此单价」扣费；请与上游真实成本大致对齐。"}
             </p>
             <label>
               优先级

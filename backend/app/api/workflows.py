@@ -14,11 +14,14 @@ from app.schemas import (
     ProjectAssetCreateIn,
     ProjectAssetOut,
     WorkflowCreateIn,
+    WorkflowExpandScenesIn,
+    WorkflowExpandScenesOut,
     WorkflowOut,
     WorkflowRunCreateIn,
     WorkflowRunOut,
     WorkflowUpdateIn,
 )
+from app.services import graph_ops, scene_expand
 from app.services.graph_revisions import persist_graph, undo_graph
 from app.services.project_assets import (
     brand_from_graph,
@@ -313,6 +316,43 @@ async def cancel_run(
     await delete_ephemeral_run(db, run)
     await db.commit()
     return payload
+
+
+@router.post("/{workflow_id}/expand-scenes", response_model=WorkflowExpandScenesOut)
+async def expand_workflow_scenes(
+    workflow_id: int,
+    body: WorkflowExpandScenesIn,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowExpandScenesOut:
+    wf = await db.get(Workflow, workflow_id)
+    if wf is None or wf.user_id != user.id:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    graph = graph_ops.parse_graph(wf.graph_json)
+    try:
+        result = scene_expand.expand_scenes_to_nodes(
+            graph,
+            source_node_id=body.source_node_id,
+            mode=body.mode,
+            create_images=body.create_images,
+            create_tts=body.create_tts,
+            create_subtitles=body.create_subtitles,
+            layout=body.layout,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await persist_graph(db, wf, result["graph"], source="expand_scenes")
+    await sync_from_graph(db, wf)
+    await refresh_cover(db, wf)
+    await db.commit()
+    await db.refresh(wf)
+    return WorkflowExpandScenesOut(
+        workflow_id=wf.id,
+        graph=json.loads(wf.graph_json or "{}"),
+        created_node_ids=list(result.get("created_node_ids") or []),
+        created_edge_ids=list(result.get("created_edge_ids") or []),
+        final_node_id=result.get("final_node_id"),
+    )
 
 
 @router.get("/{workflow_id}", response_model=WorkflowOut)

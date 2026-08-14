@@ -166,11 +166,19 @@ def _port_ids(spec: dict, which: str) -> list[str]:
     return [str(p.get("id")) for p in (spec.get(which) or []) if p.get("id")]
 
 
-def _output_kind(spec: dict, handle: str) -> str:
-    for p in spec.get("outputs") or []:
+def _port_kind(spec: dict, which: str, handle: str) -> str:
+    for p in spec.get(which) or []:
         if str(p.get("id")) == handle:
             return str(p.get("kind") or handle)
     return handle
+
+
+def _output_kind(spec: dict, handle: str) -> str:
+    return _port_kind(spec, "outputs", handle)
+
+
+def _input_kind(spec: dict, handle: str) -> str:
+    return _port_kind(spec, "inputs", handle)
 
 
 def resolve_connect_handles(
@@ -213,7 +221,7 @@ def resolve_connect_handles(
             compatible = [
                 h
                 for h in tgt_ins
-                if h not in no_default and kinds_compatible(sh, h)
+                if h not in no_default and kinds_compatible(src_kind, _input_kind(tgt, h))
             ]
             if len(compatible) == 1:
                 picked = compatible[0]
@@ -287,8 +295,12 @@ def validate_connect(
         raise ValueError(
             f"「{tgt.get('label') or target_type}」没有输入端口 {th}。可用：{', '.join(tgt_ins)}。"
         )
-    if sh and th and not kinds_compatible(sh, th):
-        raise ValueError(f"端口不兼容：{source_type}.{sh} 不能接到 {target_type}.{th}。")
+    src_kind = _output_kind(src, sh)
+    tgt_kind = _input_kind(tgt, th)
+    if sh and th and not kinds_compatible(src_kind, tgt_kind):
+        raise ValueError(
+            f"端口不兼容：{source_type}.{sh}({src_kind}) 不能接到 {target_type}.{th}({tgt_kind})。"
+        )
     msg = forbid_edge_reason(
         source_id=source_id,
         source_type=source_type,

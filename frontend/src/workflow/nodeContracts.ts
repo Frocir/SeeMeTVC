@@ -260,10 +260,51 @@ function forbidReason(
   return null;
 }
 
+function portKind(spec: NodeSpec, which: "inputs" | "outputs", handle?: string | null): string {
+  const h = String(handle || "");
+  if (!h) return "";
+  const ports = which === "inputs" ? spec.inputs || [] : spec.outputs || [];
+  return ports.find((p) => p.id === h)?.kind || h;
+}
+
 export function kindsCompatible(contracts: NodeContracts | null | undefined, sh?: string | null, th?: string | null): boolean {
   if (!sh || !th) return true;
   if (sh === th) return true;
   return (contracts?.kind_compat?.[sh] || []).includes(th);
+}
+
+function invalidEdgeReason(
+  edges: EdgeRef[],
+  byId: Map<string, Node<WfData>>,
+  check: Set<string>,
+  contracts: NodeContracts,
+): string | null {
+  for (const e of edges) {
+    if (!check.has(e.target)) continue;
+    const src = byId.get(e.source);
+    const tgt = byId.get(e.target);
+    if (!src || !tgt) return "画布存在指向已删除节点的连线，请删除无效连线后再运行。";
+    const st = normalizeNodeType(src.data.nodeType);
+    const tt = normalizeNodeType(tgt.data.nodeType);
+    const srcSpec = specOf(contracts, st);
+    const tgtSpec = specOf(contracts, tt);
+    const sh = String(e.sourceHandle || "");
+    const th = String(e.targetHandle || "");
+    const outs = (srcSpec.outputs || []).map((p) => p.id);
+    const ins = (tgtSpec.inputs || []).map((p) => p.id);
+    if (outs.length && !outs.includes(sh)) {
+      return `「${srcSpec.label || st}」没有输出端口 ${sh || "—"}。可用：${outs.join("、")}。`;
+    }
+    if (ins.length && !ins.includes(th)) {
+      return `「${tgtSpec.label || tt}」没有输入端口 ${th || "—"}。可用：${ins.join("、")}。`;
+    }
+    const sourceKind = portKind(srcSpec, "outputs", sh);
+    const targetKind = portKind(tgtSpec, "inputs", th);
+    if (sourceKind && targetKind && !kindsCompatible(contracts, sourceKind, targetKind)) {
+      return `端口不兼容：${st}.${sh}(${sourceKind}) 不能接到 ${tt}.${th}(${targetKind})。`;
+    }
+  }
+  return null;
 }
 
 export function cannotRunReason(
@@ -371,11 +412,15 @@ export function cannotRunReason(
     }
     checkNodes = nodes.filter((n) => relevant.has(n.id));
   }
+  const checkSet = new Set(checkNodes.map((n) => n.id));
+  const invalidEdge = invalidEdgeReason(edges, byId, checkSet, contracts);
+  if (invalidEdge) return invalidEdge;
+
   for (const n of checkNodes) {
     const reason = nodeInputReason(n, edges, byId, contracts);
     if (reason) return reason;
   }
-  const forbid = forbidReason(edges, byId, new Set(checkNodes.map((n) => n.id)), contracts);
+  const forbid = forbidReason(edges, byId, checkSet, contracts);
   if (forbid) return forbid;
 
   const pool = targets.length ? nodes.filter((n) => targets.includes(n.id)) : nodes;

@@ -1,4 +1,5 @@
 import type { Connection, Edge, Node } from "@xyflow/react";
+import type { NodeContracts } from "./nodeContracts";
 import { isValidPortConnection, portsFor } from "./ports";
 import { normalizeNodeType, type WfData, type WfNodeType } from "./types";
 
@@ -10,8 +11,9 @@ export function readSourcePort(data: WfData, handle?: string | null): Partial<Wf
     const n = String(out.narration ?? data.narration ?? "").trim();
     return n ? { text: n, narration: n } : {};
   }
-  if (h === "image") {
-    const url = String(out.image_url ?? data.image_url ?? "").trim();
+  if (h === "image" || h === "frames") {
+    const frames = Array.isArray(out.frames) ? out.frames : Array.isArray(data.frames) ? data.frames : [];
+    const url = String(out.image_url ?? data.image_url ?? frames[0] ?? "").trim();
     return url ? { image_url: url } : {};
   }
   if (h === "video" || h === "clips" || h === "result") {
@@ -23,6 +25,12 @@ export function readSourcePort(data: WfData, handle?: string | null): Partial<Wf
   if (h === "audio" || h === "bgm" || h === "vo") {
     const url = String(out.audio_url ?? data.audio_url ?? "").trim();
     return url ? { audio_url: url } : {};
+  }
+  if (h === "scenes" || h === "timeline") {
+    const val = out[h] ?? data[h];
+    const text = typeof val === "string" ? val : val == null ? "" : JSON.stringify(val, null, 2);
+    const trimmed = text.trim();
+    return trimmed ? { text: trimmed, prompt: trimmed } : {};
   }
   const prompt = String(out.prompt ?? data.prompt ?? "").trim();
   const text = String(out.text ?? data.text ?? prompt).trim();
@@ -148,6 +156,7 @@ export function inferConnectionHandles(
   c: Connection,
   nodes: Node<WfData>[],
   edges: Edge[],
+  contracts?: NodeContracts | null,
 ): Connection {
   if (c.sourceHandle && c.targetHandle) return c;
   const src = nodes.find((n) => n.id === c.source);
@@ -158,7 +167,7 @@ export function inferConnectionHandles(
   for (const o of outs) {
     for (const i of ins) {
       const next = { ...c, sourceHandle: o.id, targetHandle: i.id };
-      if (isValidPortConnection(next, nodes, edges)) return next;
+      if (isValidPortConnection(next, nodes, edges, contracts)) return next;
     }
   }
   return c;

@@ -62,6 +62,16 @@ export const NODE_PORTS: Record<string, { inputs: PortDef[]; outputs: PortDef[] 
       { id: "audio", label: "audio", kind: "audio" },
     ],
   },
+  VideoReversePrompt: {
+    inputs: [{ id: "video", label: "video", kind: "video" }],
+    outputs: [
+      { id: "text", label: "分析", kind: "text" },
+      { id: "prompt", label: "prompt", kind: "prompt" },
+      { id: "scenes", label: "分镜", kind: "text" },
+      { id: "frames", label: "关键帧", kind: "image" },
+      { id: "timeline", label: "时间轴", kind: "text" },
+    ],
+  },
   AudioTrim: {
     inputs: [{ id: "audio", label: "audio", kind: "audio" }],
     outputs: [{ id: "audio", label: "audio", kind: "audio" }],
@@ -108,8 +118,19 @@ export function dropClosedNarrationEdges<T extends { source: string; sourceHandl
   return edges.filter((e) => !(closed.has(e.source) && e.sourceHandle === "narration"));
 }
 
-export type PortNodeRef = { id: string; data: { nodeType: WfNodeType } };
-export type PortEdgeRef = { source: string; target: string };
+export type PortNodeRef = { id: string; data: { nodeType: WfNodeType; wantNarration?: boolean; llmRole?: string } };
+export type PortEdgeRef = { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null };
+
+type PortContracts = {
+  kind_compat?: Record<string, string[]>;
+  forbid_edges?: Array<{ source_type?: string; target_type?: string; target_handle?: string; source_fed_by?: string }>;
+} | null;
+
+function portKind(node: PortNodeRef | undefined, which: "inputs" | "outputs", handle: string | undefined): string {
+  if (!node || !handle) return handle || "";
+  const ports = portsFor(node.data.nodeType, node.data)[which];
+  return ports.find((p) => p.id === handle)?.kind || handle;
+}
 
 function isTtsLike(
   sourceId: string,
@@ -130,7 +151,7 @@ export function isValidPortConnection(
   c: Connection | Edge,
   nodes?: PortNodeRef[],
   edges?: PortEdgeRef[],
-  contracts?: { kind_compat?: Record<string, string[]>; forbid_edges?: Array<{ source_type?: string; target_type?: string; target_handle?: string; source_fed_by?: string }> } | null,
+  contracts?: PortContracts,
 ): boolean {
   const sh = c.sourceHandle ?? undefined;
   const th = c.targetHandle ?? undefined;
@@ -153,9 +174,13 @@ export function isValidPortConnection(
     }
   }
   if (!sh || !th) return true;
-  if (sh === th) return true;
-  if (sh === "clips" && th === "video") return true;
-  if (sh === "video" && th === "clips") return true;
+  const src = nodes?.find((n) => n.id === String(c.source));
+  const tgt = nodes?.find((n) => n.id === String(c.target));
+  const sourceKind = portKind(src, "outputs", sh) || sh;
+  const targetKind = portKind(tgt, "inputs", th) || th;
+  if (sourceKind === targetKind) return true;
+  if (sourceKind === "clips" && targetKind === "video") return true;
+  if (sourceKind === "video" && targetKind === "clips") return true;
   const compat = contracts?.kind_compat || KIND_COMPAT;
-  return (compat[sh] || []).includes(th);
+  return (compat[sourceKind] || []).includes(targetKind);
 }

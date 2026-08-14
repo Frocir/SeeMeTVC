@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal
 from app.models import Channel, User, Workflow, WorkflowRun, WorkflowRunStatus
-from app.services import image_gen, media_ops, seedance
+from app.services import image_gen, media_ops, seedance, video_reverse
 from app.services import llm as llm_svc
 from app.services import tts as tts_svc
 from app.services.ledger import KIND_CHARGE, KIND_REFUND, record_entry
@@ -52,6 +52,7 @@ NODE_TYPES = frozenset(
         "VideoMux",
         "MixAudio",
         "VideoDemux",
+        "VideoReversePrompt",
         "AudioTrim",
         "TtsSpeak",
         "SubtitleBurn",
@@ -74,6 +75,7 @@ PRODUCER_TYPES = frozenset(
         "AudioTrim",
         "MixAudio",
         "VideoDemux",
+        "VideoReversePrompt",
         "SubtitleBurn",
     }
 )
@@ -159,6 +161,8 @@ def _has_usable_output(ntype: str, data: dict) -> bool:
     if ntype == "VideoDemux":
         video = str(data.get("clip_url") or data.get("result_url") or "").strip()
         return bool(video and str(data.get("audio_url") or "").strip())
+    if ntype == "VideoReversePrompt":
+        return bool(str(data.get("prompt") or data.get("text") or "").strip() or data.get("scenes"))
     return True
 
 
@@ -503,6 +507,20 @@ def _tag_ports(ntype: str, out: dict[str, Any]) -> dict[str, Any]:
     elif free == "VideoDemux":
         ports["video"] = out.get("result_url") or out.get("clip_url")
         ports["audio"] = out.get("audio_url")
+    elif free == "VideoReversePrompt":
+        ports["text"] = {
+            k: out[k]
+            for k in (*BRIEF_KEYS, "text", "scenes", "frames", "timeline", "reference_video_url")
+            if k in out and out[k] is not None
+        }
+        if out.get("prompt"):
+            ports["prompt"] = out.get("prompt")
+        if out.get("scenes") is not None:
+            ports["scenes"] = out.get("scenes")
+        if out.get("frames") is not None:
+            ports["frames"] = out.get("frames")
+        if out.get("timeline") is not None:
+            ports["timeline"] = out.get("timeline")
     elif free in LLM_TYPES:
         ports["text"] = {
             k: out[k]
@@ -899,13 +917,23 @@ async def _exec_mix(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str, 
     }
 
 
-async def _exec_t2i(db: AsyncSession, ctx: dict[str, Any], data: dict, on_hint) -> dict[str, Any]:
+async def _exec_t2i(
+    db: AsyncSession,
+    user: User,
+    run: WorkflowRun,
+    ctx: dict[str, Any],
+    data: dict,
+    charged: list[float],
+    on_hint,
+) -> dict[str, Any]:
     prompt = _as_text(data.get("prompt"), ctx.get("prompt"), ctx.get("text"))
     if not prompt:
         raise WorkflowExecError("文生图缺少提示词")
     image_url = data.get("image_url") or ctx.get("image_url")
     model_id = str(data.get("model_id") or "").strip()
     ch = await _pick_channel(db, model_id) if model_id else None
+    if ch is not None and ch.kind != "image":
+        ch = None
     if ch is None:
         result = await db.execute(
             select(Channel)
@@ -916,12 +944,48 @@ async def _exec_t2i(db: AsyncSession, ctx: dict[str, Any], data: dict, on_hint) 
         ch = result.scalar_one_or_none()
     if ch is None:
         raise WorkflowExecError("没有已启用的文生图渠道")
+
+    cost = round(float(ch.cost_per_second or 0), 4)
+    await db.refresh(user)
+    if user.balance < cost:
+        raise WorkflowExecError("余额不足，无法继续生成图片")
+    if cost > 0:
+        await record_entry(
+            db,
+            user,
+            -cost,
+            kind=KIND_CHARGE,
+            title=f"项目出片 #{run.id} 图片",
+            ref_type="run",
+            ref_id=run.id,
+        )
+        charged.append(cost)
+        await db.commit()
+
     await on_hint("正在生成图片…")
     try:
-        url = await image_gen.generate(ch, prompt=prompt, image_url=str(image_url) if image_url else None)
+        url = await image_gen.generate(
+            ch,
+            prompt=prompt,
+            image_url=str(image_url) if image_url else None,
+            user_id=user.id,
+        )
     except image_gen.ImageGenError as exc:
+        if cost > 0:
+            await db.refresh(user)
+            await record_entry(
+                db,
+                user,
+                cost,
+                kind=KIND_REFUND,
+                title=f"项目出片 #{run.id} 图片退款",
+                ref_type="run",
+                ref_id=run.id,
+            )
+            charged.pop()
+            await db.commit()
         raise WorkflowExecError(str(exc)) from exc
-    return {**ctx, "image_url": url, "prompt": prompt}
+    return {**ctx, "image_url": url, "prompt": prompt, "image_cost": cost, "model_id": ch.model_id}
 
 
 async def _exec_audio_trim(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str, Any]:
@@ -986,6 +1050,46 @@ async def _exec_demux(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str
         "clips": [silent],
         "audio_url": audio,
     }
+
+
+async def _exec_video_reverse(
+    db: AsyncSession,
+    user_id: int,
+    ctx: dict[str, Any],
+    data: dict,
+    on_hint,
+) -> dict[str, Any]:
+    url = (
+        data.get("clip_url")
+        or data.get("result_url")
+        or data.get("preview_url")
+        or ctx.get("clip_url")
+        or ctx.get("result_url")
+        or (ctx.get("clips") or [None])[-1]
+    )
+    if not url:
+        raise WorkflowExecError("视频反推缺少输入视频")
+    brief = _as_text(data.get("prompt"), data.get("text"), ctx.get("prompt"), ctx.get("text"))
+    frame_strategy = str(data.get("frame_strategy") or "scene_detect")
+    await on_hint("正在智能检测参考视频镜头并抽取关键帧…" if frame_strategy != "fixed" else "正在抽取参考视频关键帧…")
+    try:
+        out = await video_reverse.reverse_prompt(
+            db,
+            user_id=user_id,
+            video_url=str(url),
+            brief=brief,
+            model_id=str(data.get("model_id") or ""),
+            frame_count=int(data.get("frame_count") or 3),
+            frame_strategy=frame_strategy,
+            max_scenes=int(data.get("max_scenes") or data.get("frame_count") or 6),
+            scene_threshold=float(data.get("scene_threshold") or 0.28),
+            sample_fps=float(data.get("sample_fps") or 2.0),
+            prompt_style=str(data.get("prompt_style") or "seedance"),
+        )
+    except video_reverse.VideoReverseError as exc:
+        raise WorkflowExecError(str(exc)) from exc
+    await on_hint(None)
+    return {**ctx, **out, "reference_video_url": str(url)}
 
 
 def _exec_preview(ctx: dict[str, Any], _data: dict) -> dict[str, Any]:
@@ -1086,7 +1190,8 @@ async def execute_run(run_id: int) -> None:
                 elif ntype in ("ImageAsset", "MakeupControl"):
                     out = _exec_image_asset(ctx, data)
                 elif ntype == "TextToImage":
-                    out = await _exec_t2i(db, ctx, data, _hint)
+                    out = await _exec_t2i(db, user, run, ctx, data, charged, _hint)
+                    cost = float(out.get("image_cost") or 0)
                 elif ntype in ("ImageToVideo", "ShotGenerate"):
                     image_wired = any(
                         str(e.get("targetHandle") or "") == "image" for e in _incoming_edges(nid, edges)
@@ -1113,6 +1218,8 @@ async def execute_run(run_id: int) -> None:
                     out = await _exec_mix(user.id, ctx, data)
                 elif ntype == "VideoDemux":
                     out = await _exec_demux(user.id, ctx, data)
+                elif ntype == "VideoReversePrompt":
+                    out = await _exec_video_reverse(db, user.id, ctx, data, _hint)
                 elif ntype == "SubtitleBurn":
                     out = await _exec_subtitle(user.id, ctx, data)
                 else:
@@ -1141,6 +1248,9 @@ async def execute_run(run_id: int) -> None:
                             "makeup_intensity",
                             "aspect",
                             "mux_note",
+                            "frames",
+                            "timeline",
+                            "reference_video_url",
                             "outputs",
                         )
                     },

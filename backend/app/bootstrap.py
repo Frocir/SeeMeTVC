@@ -19,6 +19,7 @@ ANTHROPIC_LLM_CHANNEL_NAME = "Anthropic · 对话"
 TTS_CHANNEL_NAME = "Edge TTS（aisrv）"
 IMAGE_SIM_CHANNEL_NAME = "本地文生图模拟"
 IMAGE_SIM_MODEL_ID = "t2i-local-simulate"
+OPENAI_IMAGE_CHANNEL_NAME = "OpenAI 兼容 · 图像"
 LLM_SIM_CHANNEL_NAME = "本地 LLM 模拟"
 LLM_SIM_MODEL_ID = "llm-local-simulate"
 
@@ -389,7 +390,7 @@ async def _ensure_tts_channel(db: AsyncSession) -> None:
 
 async def _ensure_image_channel(db: AsyncSession) -> None:
     ch = await _get_by_name(db, IMAGE_SIM_CHANNEL_NAME)
-    remark = "本地占位图（本轮不接真模型，不扣费）。超管可见 kind=image。"
+    remark = "本地占位图（离线演示，不调上游、不扣费）。真出图请启用 OpenAI 兼容图像渠道。"
     if ch is None:
         db.add(
             Channel(
@@ -406,13 +407,46 @@ async def _ensure_image_channel(db: AsyncSession) -> None:
                 remark=remark,
             )
         )
-        return
-    ch.kind = "image"
-    ch.provider = "mock"
-    ch.model_id = IMAGE_SIM_MODEL_ID
-    ch.upstream_model = "local-simulate"
-    ch.enabled = True
-    ch.remark = remark
+    else:
+        ch.kind = "image"
+        ch.provider = "mock"
+        ch.model_id = IMAGE_SIM_MODEL_ID
+        ch.upstream_model = "local-simulate"
+        ch.enabled = True
+        ch.remark = remark
+
+    openai = await _get_by_name(db, OPENAI_IMAGE_CHANNEL_NAME)
+    if openai is None:
+        existing = await db.execute(
+            select(Channel).where(Channel.kind == "image", Channel.provider == "openai").limit(1)
+        )
+        if existing.scalar_one_or_none() is None:
+            db.add(
+                Channel(
+                    name=OPENAI_IMAGE_CHANNEL_NAME,
+                    provider="openai",
+                    kind="image",
+                    base_url="https://api.openai.com/v1",
+                    api_key="",
+                    model_id="gpt-image-1",
+                    upstream_model="gpt-image-1",
+                    cost_per_second=0.0,
+                    priority=70,
+                    enabled=False,
+                    remark="OpenAI 兼容 Images API：/v1/images/generations。image 渠道的 cost_per_second 表示单张图片成本；超管改 Key 后启用。",
+                )
+            )
+    else:
+        openai.kind = "image"
+        openai.provider = "openai"
+        if not (openai.base_url or "").strip():
+            openai.base_url = "https://api.openai.com/v1"
+        if not (openai.model_id or "").strip():
+            openai.model_id = "gpt-image-1"
+        if not (openai.upstream_model or "").strip():
+            openai.upstream_model = openai.model_id
+        if not (openai.remark or "").strip():
+            openai.remark = "OpenAI 兼容 Images API：/v1/images/generations。image 渠道的 cost_per_second 表示单张图片成本；超管改 Key 后启用。"
 
 
 async def _heal_channels(db: AsyncSession) -> None:

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Channel, User, Workflow, WorkflowRun, WorkflowRunStatus
-from app.services import graph_ops
+from app.services import graph_ops, scene_expand
 from app.services.graph_revisions import persist_graph
 from app.services.project_assets import refresh_cover, sync_from_graph
 from app.services.run_preflight import cannot_run_reason
@@ -28,6 +28,7 @@ RUN_TOOLS: dict[str, str] = {
     "run_video_mux": "VideoMux",
     "run_mix_audio": "MixAudio",
     "run_video_demux": "VideoDemux",
+    "run_video_reverse_prompt": "VideoReversePrompt",
     "run_audio_trim": "AudioTrim",
     "run_subtitle_burn": "SubtitleBurn",
 }
@@ -129,6 +130,22 @@ TOOL_SPECS: list[ToolSpec] = [
         "删除节点及其连线。",
         {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"]},
     ),
+    ToolSpec(
+        "expand_scenes_to_nodes",
+        "把 VideoReversePrompt 节点输出的 scenes 自动展开成多镜头工作流节点链。",
+        {
+            "type": "object",
+            "properties": {
+                "source_node_id": {"type": "string"},
+                "mode": {"type": "string", "enum": ["silent", "with_image", "with_tts", "full_tvc"]},
+                "create_images": {"type": "boolean"},
+                "create_tts": {"type": "boolean"},
+                "create_subtitles": {"type": "boolean"},
+                "layout": {"type": "string", "enum": ["horizontal", "vertical"]},
+            },
+            "required": ["source_node_id"],
+        },
+    ),
 ]
 
 for _tool, _nt in RUN_TOOLS.items():
@@ -195,6 +212,25 @@ async def call_tool(ctx: McpContext, name: str, arguments: dict[str, Any]) -> st
         graph_ops.delete_node(graph, str(args.get("node_id") or ""))
         await _save(ctx, graph)
         return dumps({"ok": True})
+    if name == "expand_scenes_to_nodes":
+        result = scene_expand.expand_scenes_to_nodes(
+            graph,
+            source_node_id=str(args.get("source_node_id") or ""),
+            mode=str(args.get("mode") or "with_image"),
+            create_images=args.get("create_images") if isinstance(args.get("create_images"), bool) else None,
+            create_tts=args.get("create_tts") if isinstance(args.get("create_tts"), bool) else None,
+            create_subtitles=args.get("create_subtitles") if isinstance(args.get("create_subtitles"), bool) else None,
+            layout=str(args.get("layout") or "horizontal"),
+        )
+        await _save(ctx, graph)
+        return dumps(
+            {
+                "ok": True,
+                "created_node_ids": result.get("created_node_ids") or [],
+                "created_edge_ids": result.get("created_edge_ids") or [],
+                "final_node_id": result.get("final_node_id"),
+            }
+        )
     if name in RUN_TOOLS:
         return await _run_node(ctx, graph, name, str(args.get("node_id") or ""))
     raise ValueError(f"未知工具：{name}")
@@ -207,7 +243,12 @@ async def estimate_run_cost(db: AsyncSession, graph: dict, node_id: str) -> dict
     label = str(data.get("label") or nt)
     model_id = str(data.get("model_id") or "")
     cost = 0.0
-    if nt == "ImageToVideo":
+    if nt == "TextToImage":
+        ch = await _channel(db, model_id, kind="image")
+        if ch is not None:
+            model_id = ch.model_id
+            cost = round(float(ch.cost_per_second or 0), 4)
+    elif nt == "ImageToVideo":
         ch = await _channel(db, model_id, kind="video")
         if ch is not None:
             model_id = ch.model_id

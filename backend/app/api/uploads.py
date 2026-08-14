@@ -78,13 +78,15 @@ def local_upload_path(image_url: str | None) -> Path | None:
         return None
     path = urlparse(image_url).path if "://" in image_url else image_url
     m = re.fullmatch(
-        r"/uploads/(\d+)/([a-f0-9]{32}(?:_(?:mux|trim|mix|demux|tts|bgm|vo))?\.(jpg|jpeg|png|webp|gif|mp4|webm|mov|mp3|wav|m4a|aac))",
+        r"/uploads/(\d+)/([a-z0-9_/-]*[a-f0-9]{32}(?:_(?:mux|trim|mix|demux|tts|bgm|vo|t2i|frame\d+))?\.(jpg|jpeg|png|webp|gif|mp4|webm|mov|mp3|wav|m4a|aac)|video_reverse/[a-f0-9]{32}/scene_\d{3}\.(jpg|jpeg|png|webp))",
         path,
         re.I,
     )
     if not m:
         return None
     user_id, filename = m.group(1), m.group(2)
+    if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
+        return None
     candidate = uploads_root() / user_id / filename
     if candidate.is_file():
         return candidate

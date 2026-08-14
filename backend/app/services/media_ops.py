@@ -81,6 +81,21 @@ def _ffmpeg_bin() -> str:
     )
 
 
+def ffmpeg_bin() -> str:
+    return _ffmpeg_bin()
+
+
+def ffprobe_bin() -> str:
+    ffmpeg = Path(_ffmpeg_bin())
+    candidate = ffmpeg.with_name("ffprobe.exe" if ffmpeg.suffix.lower() == ".exe" else "ffprobe")
+    if candidate.is_file():
+        return str(candidate.resolve())
+    which = shutil.which("ffprobe")
+    if which:
+        return which
+    raise MediaOpsError("未找到 ffprobe。请安装完整 ffmpeg，或确保 ffprobe 在 PATH 中。")
+
+
 async def run_ffmpeg(cmd: list[str]) -> None:
     """Run ffmpeg. Prefer thread+subprocess so Windows SelectorEventLoop (uvicorn) works.
 
@@ -147,6 +162,76 @@ async def _download(url: str, dest: Path) -> None:
 
 def _public_upload_url(user_id: int, filename: str) -> str:
     return f"/uploads/{user_id}/{filename}"
+
+
+def public_upload_url(user_id: int, filename: str) -> str:
+    return _public_upload_url(user_id, filename)
+
+
+async def download_media_to_path(url: str, dest: Path) -> None:
+    await _download(url, dest)
+
+
+async def download_media(url: str, dest: Path) -> None:
+    await _download(url, dest)
+
+
+async def probe_duration(src: Path) -> float:
+    import subprocess
+
+    ffprobe = ffprobe_bin()
+
+    def _sync() -> float:
+        proc = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(src),
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if proc.returncode != 0:
+            msg = (proc.stderr or "")[-800:]
+            raise MediaOpsError(f"ffprobe 失败：{msg or proc.returncode}")
+        try:
+            return max(0.0, float((proc.stdout or "0").strip()))
+        except ValueError as exc:
+            raise MediaOpsError("ffprobe 未返回有效视频时长") from exc
+
+    return await asyncio.to_thread(_sync)
+
+
+async def probe_duration_seconds(url: str) -> float:
+    with tempfile.TemporaryDirectory(prefix="seemetvc_probe_") as tmp:
+        src = Path(tmp) / "in.media"
+        await _download(url, src)
+        return await probe_duration(src)
+
+
+async def extract_frame_at(src: Path, dest: Path, *, at_seconds: float) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    await run_ffmpeg(
+        [
+            _ffmpeg_bin(),
+            "-y",
+            "-ss",
+            f"{max(0.0, float(at_seconds or 0.0)):.3f}",
+            "-i",
+            str(src),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            str(dest),
+        ]
+    )
 
 
 async def ensure_mock_demo_clip(duration_seconds: int = 5) -> str:
@@ -300,6 +385,51 @@ async def concat_videos(user_id: int, urls: list[str]) -> str:
         )
 
     return _public_upload_url(user_id, out_name)
+
+
+async def extract_video_keyframes(
+    user_id: int,
+    url: str,
+    *,
+    count: int = 3,
+    every_seconds: float = 2.0,
+) -> list[str]:
+    if not url:
+        raise MediaOpsError("抽帧缺少输入视频")
+    count = max(1, min(int(count or 3), 6))
+    every_seconds = max(0.5, float(every_seconds or 2.0))
+    ffmpeg = _ffmpeg_bin()
+    user_dir = uploads_root() / str(user_id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    out_urls: list[str] = []
+
+    with tempfile.TemporaryDirectory(prefix="seemetvc_frames_") as tmp:
+        tmp_path = Path(tmp)
+        src = tmp_path / "in.mp4"
+        await _download(url, src)
+        for i in range(count):
+            name = f"{uuid.uuid4().hex}_frame{i + 1}.jpg"
+            out_path = user_dir / name
+            await run_ffmpeg(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-ss",
+                    f"{i * every_seconds:.2f}",
+                    "-i",
+                    str(src),
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "3",
+                    str(out_path),
+                ]
+            )
+            if out_path.is_file() and out_path.stat().st_size > 200:
+                out_urls.append(_public_upload_url(user_id, name))
+    if not out_urls:
+        raise MediaOpsError("未能从视频中抽取关键帧")
+    return out_urls
 
 
 async def trim_video(user_id: int, url: str, start: float, end: float) -> str:

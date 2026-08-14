@@ -11,6 +11,7 @@ export type WfNodeType =
   | "VideoMux"
   | "MixAudio"
   | "VideoDemux"
+  | "VideoReversePrompt"
   | "AudioTrim"
   | "TtsSpeak"
   | "SubtitleBurn"
@@ -26,9 +27,34 @@ export type WfNodeType =
   | "TimelineMux"
   | "PreviewOut";
 
-export type MediaKind = "text" | "image" | "video" | "audio";
+export type MediaKind = "text" | "prompt" | "image" | "video" | "audio";
 
 export type LlmRole = "chat" | "brief" | "shot";
+
+export type Scene = {
+  id?: string;
+  index?: number;
+  title?: string;
+  start_time?: number | null;
+  end_time?: number | null;
+  frame_url?: string;
+  score?: number;
+  analysis?: string;
+  prompt?: string;
+  seedance_prompt?: string;
+  midjourney_prompt?: string;
+  jimeng_prompt?: string;
+  narration?: string;
+  negative_prompt?: string;
+};
+
+export type TimelineItem = {
+  index: number;
+  start_time: number;
+  end_time: number;
+  frame_url: string;
+  score?: number;
+};
 
 export type WfData = {
   nodeType: WfNodeType;
@@ -61,6 +87,16 @@ export type WfData = {
   runOutput?: Record<string, unknown> | null;
   stale?: boolean;
   simulated?: boolean;
+  frame_count?: number;
+  frame_strategy?: "fixed" | "scene_detect";
+  max_scenes?: number;
+  scene_threshold?: number;
+  sample_fps?: number;
+  prompt_style?: "seedance" | "midjourney" | "jimeng" | "all";
+  frames?: string[];
+  timeline?: TimelineItem[];
+  scenes?: Scene[];
+  reference_video_url?: string;
 };
 
 export type PortDef = {
@@ -82,6 +118,7 @@ export const EXIT_NODE_TYPES: WfNodeType[] = [
   "VideoMux",
   "MixAudio",
   "VideoDemux",
+  "VideoReversePrompt",
   "AudioTrim",
   "SubtitleBurn",
   "ShotGenerate",

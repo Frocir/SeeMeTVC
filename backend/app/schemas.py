@@ -175,6 +175,23 @@ class WorkflowUpdateIn(BaseModel):
     graph: WorkflowGraphIn | None = None
 
 
+class WorkflowExpandScenesIn(BaseModel):
+    source_node_id: str
+    mode: str = "with_image"
+    create_images: bool | None = None
+    create_tts: bool | None = None
+    create_subtitles: bool | None = None
+    layout: str = "horizontal"
+
+
+class WorkflowExpandScenesOut(BaseModel):
+    workflow_id: int
+    graph: dict
+    created_node_ids: list[str]
+    created_edge_ids: list[str]
+    final_node_id: str | None = None
+
+
 class WorkflowOut(BaseModel):
     id: int
     name: str

@@ -52,6 +52,11 @@ recipes:
     when: 2 镜及以上
     chain: 每镜一条 ImageToVideo（可经 VideoTrim）→ VideoMux；成片若要声音再进 MixAudio
     must: 一键跑只能有一条相连的生产链，不要在画布上放第二条互不相连的图。
+  - id: reverse_reference
+    label: 参考视频反推
+    when: 用户上传参考视频，希望拆分镜、仿运镜或提取 Seedance prompt
+    chain: VideoAsset → VideoReversePrompt → LlmText 或 ImageToVideo.prompt
+    must: 只参考风格/镜头/节奏，不复制真实人物脸、声音或未授权品牌。
 
 nodes:
   TextAsset:
@@ -299,6 +304,30 @@ nodes:
     outputs:
       - { id: video, kind: video }
       - { id: audio, kind: audio }
+
+  VideoReversePrompt:
+    group: produce
+    label: 视频反推
+    exit: false
+    orphan: full_run_forbid
+    channel: llm
+    run_tool: run_video_reverse_prompt
+    purpose: 从参考视频智能切镜/抽关键帧，并反推镜头语言、时间轴分镜和 Seedance prompt。
+    when: 用户给了参考视频，要求“照这个风格/拆分镜/反推提示词”。
+    when_not: 没有视频输入时不要放；不要用它复制真实人物脸、声音或未授权品牌。
+    fields: [prompt, text, model_id, frame_count, frame_strategy, max_scenes, scene_threshold, sample_fps, prompt_style, clip_url, result_url, preview_url, frames, timeline, scenes]
+    inputs:
+      - id: video
+        kind: video
+        required: edge_or_fields
+        fields: [clip_url, result_url, preview_url]
+        missing: 「{label}」缺少参考视频：请上传视频，或接上游视频。
+    outputs:
+      - { id: text, kind: text }
+      - { id: prompt, kind: prompt }
+      - { id: scenes, kind: text }
+      - { id: frames, kind: image }
+      - { id: timeline, kind: text }
 
   AudioTrim:
     group: finish

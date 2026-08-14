@@ -151,6 +151,27 @@ export type Workflow = {
   updated_at: string;
 };
 
+export type ExpandScenesMode = "silent" | "with_image" | "with_tts" | "full_tvc";
+
+export type ExpandScenesOut = {
+  workflow_id: number;
+  graph: WorkflowGraph;
+  created_node_ids: string[];
+  created_edge_ids: string[];
+  final_node_id?: string | null;
+};
+
+export async function expandScenesToNodes(
+  workflowId: number,
+  sourceNodeId: string,
+  mode: ExpandScenesMode = "with_image",
+): Promise<ExpandScenesOut> {
+  return api<ExpandScenesOut>(`/api/workflows/${workflowId}/expand-scenes`, {
+    method: "POST",
+    body: JSON.stringify({ source_node_id: sourceNodeId, mode }),
+  });
+}
+
 export type ProjectAsset = {
   id: number;
   workflow_id: number;

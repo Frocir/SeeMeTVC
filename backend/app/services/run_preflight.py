@@ -12,6 +12,7 @@ from app.services.node_contracts import (
     needs_channel,
     node_spec,
     normalize_type_name,
+    validate_connect,
 )
 
 
@@ -199,6 +200,35 @@ def _node_input_reason(
     return None
 
 
+def _invalid_edge_reason(
+    types: dict[str, str],
+    by_id: dict[str, dict],
+    edges: list[dict],
+    check_ids: list[str],
+) -> str | None:
+    check = set(check_ids)
+    for e in edges:
+        src = str(e.get("source"))
+        tgt = str(e.get("target"))
+        if tgt not in check:
+            continue
+        if src not in by_id or tgt not in by_id:
+            return "画布存在指向已删除节点的连线，请删除无效连线后再运行。"
+        try:
+            validate_connect(
+                source_id=src,
+                source_type=types.get(src) or "",
+                target_type=types.get(tgt) or "",
+                source_handle=str(e.get("sourceHandle") or ""),
+                target_handle=str(e.get("targetHandle") or ""),
+                edges=edges,
+                types=types,
+            )
+        except ValueError as exc:
+            return str(exc)
+    return None
+
+
 def _edge_forbid_reason(
     types: dict[str, str],
     by_id: dict[str, dict],
@@ -312,6 +342,10 @@ def cannot_run_reason(
                     relevant.add(p)
                     stack.append(p)
         check_ids = [nid for nid in ids if nid in relevant]
+
+    invalid_edge = _invalid_edge_reason(types, by_id, edges, check_ids)
+    if invalid_edge:
+        return invalid_edge
 
     for nid in check_ids:
         reason = _node_input_reason(nid, types, by_id, edges)

@@ -1,7 +1,7 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { STATUS_LABEL } from "../../api";
 import { portsFor } from "../ports";
-import { normalizeNodeType, type WfData, type WfNodeType } from "../types";
+import { normalizeNodeType, type Scene, type TimelineItem, type WfData, type WfNodeType } from "../types";
 
 export type MediaNodeData = WfData & {
   onLabelChange?: (label: string) => void;
@@ -33,6 +33,7 @@ function kindMeta(nodeType: WfNodeType, data: WfData): KindMeta {
   if (nt === "VideoMux") return { key: "tool", label: "拼接", tone: "tool" };
   if (nt === "MixAudio") return { key: "audio", label: "混音", tone: "audio" };
   if (nt === "VideoDemux") return { key: "tool", label: "拆音轨", tone: "tool" };
+  if (nt === "VideoReversePrompt") return { key: "text", label: "视频反推", tone: "text" };
   if (nt === "AudioTrim") return { key: "audio", label: "音频裁切", tone: "audio" };
   if (nt === "SubtitleBurn") return { key: "tool", label: "字幕", tone: "tool" };
   if (nt === "TtsSpeak") return { key: "audio", label: "TTS", tone: "audio" };
@@ -153,11 +154,39 @@ function llmPreview(data: WfData): string {
   return text || prompt || narration;
 }
 
+function reverseFrames(data: WfData): string[] {
+  const out = data.runOutput || {};
+  const fromOut = Array.isArray(out.frames) ? out.frames.filter((x): x is string => typeof x === "string") : [];
+  return fromOut.length ? fromOut : data.frames || [];
+}
+
+function reverseScenes(data: WfData): Scene[] {
+  const out = data.runOutput || {};
+  const fromOut = Array.isArray(out.scenes) ? (out.scenes as Scene[]) : [];
+  return fromOut.length ? fromOut : data.scenes || [];
+}
+
+function reverseTimeline(data: WfData): TimelineItem[] {
+  const out = data.runOutput || {};
+  const fromOut = Array.isArray(out.timeline) ? (out.timeline as TimelineItem[]) : [];
+  return fromOut.length ? fromOut : data.timeline || [];
+}
+
 function textPreview(data: WfData): string {
   const nt = normalizeNodeType(data.nodeType);
   if (nt === "LlmText") return llmPreview(data);
   if (nt === "TextAsset") {
     return [data.slogan, data.prompt, data.text].filter(Boolean).join("\n");
+  }
+  if (nt === "VideoReversePrompt") {
+    const out = data.runOutput || {};
+    const prompt = String(out.prompt || data.prompt || "").trim();
+    const text = String(out.text || data.text || "").trim();
+    const scenes = reverseScenes(data).length;
+    const frames = reverseFrames(data).length;
+    return [text, prompt, scenes ? `分镜：${scenes} 个 Clip` : "", frames ? `关键帧：${frames} 张` : ""]
+      .filter(Boolean)
+      .join("\n");
   }
   if (nt === "TextToImage" || nt === "ImageToVideo") {
     return String(data.prompt || data.text || "").trim();
@@ -165,6 +194,34 @@ function textPreview(data: WfData): string {
   if (nt === "TtsSpeak") return String(data.text || data.narration || "").trim();
   if (nt === "SubtitleBurn") return String(data.slogan || data.text || "").trim();
   return "";
+}
+
+function ReversePreview({ data, copy }: { data: WfData; copy: string }) {
+  const frames = reverseFrames(data).slice(0, 4);
+  const scenes = reverseScenes(data);
+  const timeline = reverseTimeline(data);
+  if (!frames.length && !scenes.length) return null;
+  return (
+    <div className="cv-reverse-preview">
+      {frames.length > 0 && (
+        <div className="cv-frame-grid">
+          {frames.map((url, idx) => (
+            <img key={`${url}-${idx}`} src={url} alt="" />
+          ))}
+        </div>
+      )}
+      <div className="cv-reverse-meta">
+        <strong>{scenes.length || timeline.length} 个分镜</strong>
+        {timeline[0] && timeline[timeline.length - 1] && (
+          <span>
+            {timeline[0].start_time?.toFixed?.(1) ?? timeline[0].start_time}s–
+            {timeline[timeline.length - 1].end_time?.toFixed?.(1) ?? timeline[timeline.length - 1].end_time}s
+          </span>
+        )}
+      </div>
+      {copy && <span className="cv-reverse-copy">{copy}</span>}
+    </div>
+  );
 }
 
 function emptyHint(data: WfData): string {
@@ -177,6 +234,7 @@ function emptyHint(data: WfData): string {
   if (nt === "VideoMux") return "连接多段镜头后拼接";
   if (nt === "MixAudio") return "接满视频、BGM、口播";
   if (nt === "VideoDemux") return "连接有声视频后拆轨";
+  if (nt === "VideoReversePrompt") return "连接参考视频后反推分镜";
   if (nt === "AudioTrim") return "连接音频后裁切";
   if (nt === "SubtitleBurn") return "连接成片后烧 slogan";
   if (nt === "TtsSpeak") return "连接旁白或填写口播稿";
@@ -236,7 +294,9 @@ export function MediaNode({ data, selected }: NodeProps<Node<MediaNodeData>>) {
             if (media.url && media.kind) data.onOpenFullscreen?.(media.url, media.kind);
           }}
         >
-          {media.kind === "video" && media.url ? (
+          {nt === "VideoReversePrompt" && (reverseFrames(data).length > 0 || reverseScenes(data).length > 0) ? (
+            <ReversePreview data={data} copy={copy} />
+          ) : media.kind === "video" && media.url ? (
             <video src={media.url} playsInline controls onClick={(e) => e.stopPropagation()} />
           ) : media.kind === "audio" && media.url ? (
             <audio src={media.url} controls onClick={(e) => e.stopPropagation()} />

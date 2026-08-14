@@ -32,6 +32,7 @@ NODE_TYPES = frozenset(
         "VideoMux",
         "MixAudio",
         "VideoDemux",
+        "VideoReversePrompt",
         "AudioTrim",
         "TtsSpeak",
         "SubtitleBurn",
@@ -64,6 +65,7 @@ PORT_DEFAULTS: dict[str, tuple[str, str]] = {
     "VideoMux": ("video", "video"),
     "MixAudio": ("video", "video"),
     "VideoDemux": ("video", "video"),
+    "VideoReversePrompt": ("video", "text"),
     "AudioTrim": ("audio", "audio"),
     "TtsSpeak": ("text", "audio"),
     "SubtitleBurn": ("video", "video"),
@@ -123,6 +125,18 @@ def default_data(node_type: str) -> dict[str, Any]:
         return {"nodeType": "MixAudio", "label": "混音"}
     if nt == "VideoDemux":
         return {"nodeType": "VideoDemux", "label": "拆音轨"}
+    if nt == "VideoReversePrompt":
+        return {
+            "nodeType": "VideoReversePrompt",
+            "label": "视频反推",
+            "frame_count": 3,
+            "frame_strategy": "scene_detect",
+            "max_scenes": 6,
+            "scene_threshold": 0.28,
+            "sample_fps": 2,
+            "prompt_style": "seedance",
+            "prompt": "",
+        }
     if nt == "AudioTrim":
         return {"nodeType": "AudioTrim", "label": "音频裁切", "trim_start": 0, "trim_end": 0}
     if nt == "SubtitleBurn":

@@ -1775,6 +1775,17 @@ button.block {
   gap: 0.35rem;
 }
 
+.wf-expand-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.4rem;
+}
+
+.wf-expand-actions .ghost {
+  width: 100%;
+  justify-content: center;
+}
+
 .wf-chip {
   border: 1px solid var(--line);
   background: #fff;
@@ -3599,6 +3610,56 @@ a.cv-chip-btn {
   .tpl-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.cv-reverse-preview {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.55rem;
+  overflow: hidden;
+}
+
+.cv-frame-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  min-height: 0;
+}
+
+.cv-frame-grid img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: var(--bg-soft);
+}
+
+.cv-reverse-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.cv-reverse-meta strong {
+  color: var(--text);
+}
+
+.cv-reverse-copy {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-line;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
 }
 
 /* ---------- Consistency & usability fixes ---------- */

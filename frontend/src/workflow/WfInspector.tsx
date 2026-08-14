@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import ReferenceImageField from "../components/ReferenceImageField";
-import { uploadAudio, type ModelOption } from "../api";
+import { uploadAudio, uploadVideo, type ModelOption } from "../api";
 import { PROMPT_SNIPPETS, type PromptBucket } from "./prompts";
 import { LLM_SYSTEM, TTS_VOICES, shotSystem } from "./templates";
 import { isLlmNodeType, normalizeNodeType, type WfData } from "./types";
@@ -16,6 +16,8 @@ type Props = {
   onDelete: () => void;
   onGenerate?: () => void;
   canGenerate?: boolean;
+  onExpandScenes?: (mode: "silent" | "with_image" | "with_tts" | "full_tvc") => void;
+  canExpandScenes?: boolean;
 };
 
 function SnippetRow({
@@ -88,6 +90,47 @@ function AudioUpload({ value, onChange }: { value: string; onChange: (url: strin
   );
 }
 
+function VideoUpload({ value, onChange }: { value: string; onChange: (url: string) => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function onFile(file: File | undefined) {
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await uploadVideo(file);
+      onChange(res.url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "上传失败");
+    } finally {
+      setBusy(false);
+      if (ref.current) ref.current.value = "";
+    }
+  }
+  return (
+    <>
+      <label>
+        视频地址
+        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="/uploads/… 或上传 mp4/webm/mov" />
+      </label>
+      <button type="button" className="ghost" disabled={busy} onClick={() => ref.current?.click()}>
+        {busy ? "上传中…" : "上传视频"}
+      </button>
+      <input
+        ref={ref}
+        type="file"
+        hidden
+        accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
+        onChange={(e) => void onFile(e.target.files?.[0])}
+      />
+      {value && <video src={value} controls style={{ width: "100%", marginTop: "0.4rem" }} />}
+      {error && <p className="error">{error}</p>}
+      <p className="wf-field-hint">mp4 / webm / mov。可接到视频反推、裁切、拆音轨等节点。</p>
+    </>
+  );
+}
+
 export default function WfInspector({
   data,
   models,
@@ -99,6 +142,8 @@ export default function WfInspector({
   onDelete,
   onGenerate,
   canGenerate,
+  onExpandScenes,
+  canExpandScenes,
 }: Props) {
   if (!data) {
     return (
@@ -187,7 +232,7 @@ export default function WfInspector({
         )}
 
         {nt === "VideoAsset" && (
-          <ReferenceImageField
+          <VideoUpload
             value={d.result_url || d.clip_url || d.preview_url || ""}
             onChange={(url) =>
               onChange({
@@ -197,9 +242,123 @@ export default function WfInspector({
                 stale: false,
               })
             }
-            label="视频地址"
-            hint="粘贴可播的 mp4 URL；也可由上游节点写入"
           />
+        )}
+
+        {nt === "VideoReversePrompt" && (
+          <>
+            <VideoUpload
+              value={d.result_url || d.clip_url || d.preview_url || d.reference_video_url || ""}
+              onChange={(url) =>
+                onChange({
+                  result_url: url,
+                  clip_url: url,
+                  preview_url: url,
+                  reference_video_url: url,
+                  stale: false,
+                })
+              }
+            />
+            <label>
+              反推说明 / Brief
+              <textarea
+                rows={4}
+                value={d.prompt || d.text || ""}
+                onChange={(e) => onChange({ prompt: e.target.value, text: e.target.value })}
+                placeholder="例如：参考这个视频的运镜和光线，改成某品牌精华液广告"
+              />
+            </label>
+            <label>
+              抽帧策略
+              <select
+                value={d.frame_strategy || "scene_detect"}
+                onChange={(e) => onChange({ frame_strategy: e.target.value as WfData["frame_strategy"] })}
+              >
+                <option value="scene_detect">智能切镜</option>
+                <option value="fixed">固定间隔</option>
+              </select>
+            </label>
+            <label>
+              固定抽帧数量
+              <input
+                type="number"
+                min={1}
+                max={6}
+                step={1}
+                value={d.frame_count ?? 3}
+                onChange={(e) => onChange({ frame_count: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              最大分镜数
+              <input
+                type="number"
+                min={1}
+                max={12}
+                step={1}
+                value={d.max_scenes ?? 6}
+                onChange={(e) => onChange({ max_scenes: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              切镜阈值
+              <input
+                type="number"
+                min={0.02}
+                max={0.95}
+                step={0.01}
+                value={d.scene_threshold ?? 0.28}
+                onChange={(e) => onChange({ scene_threshold: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              采样 FPS
+              <input
+                type="number"
+                min={0.25}
+                max={6}
+                step={0.25}
+                value={d.sample_fps ?? 2}
+                onChange={(e) => onChange({ sample_fps: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              Prompt 风格
+              <select
+                value={d.prompt_style || "seedance"}
+                onChange={(e) => onChange({ prompt_style: e.target.value as WfData["prompt_style"] })}
+              >
+                <option value="seedance">Seedance 中文</option>
+                <option value="jimeng">即梦中文</option>
+                <option value="midjourney">Midjourney 英文</option>
+                <option value="all">全部</option>
+              </select>
+            </label>
+            {Array.isArray(d.frames) && d.frames.length > 0 && (
+              <div className="wf-field-hint">
+                已抽取关键帧：{d.frames.length} 张；分镜：{Array.isArray(d.scenes) ? d.scenes.length : 0} 个。
+              </div>
+            )}
+            <div className="wf-expand-actions">
+              <button
+                type="button"
+                className="ghost"
+                disabled={!canExpandScenes}
+                onClick={() => onExpandScenes?.("with_image")}
+              >
+                从分镜生成工作流
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={!canExpandScenes}
+                onClick={() => onExpandScenes?.("silent")}
+              >
+                仅生成视频镜头
+              </button>
+            </div>
+            <p className="wf-field-hint">运行后会输出分析文本、Seedance prompt、关键帧、时间轴和 scenes，可一键展开为多镜头工作流。</p>
+          </>
         )}
 
         {nt === "ImageToVideo" && (
@@ -390,10 +549,11 @@ export default function WfInspector({
               >
                 {(imageModels.length
                   ? imageModels
-                  : [{ model_id: "t2i-local-simulate", label: "本地文生图模拟" }]
+                  : [{ model_id: "t2i-local-simulate", label: "本地文生图模拟", cost_per_second: 0, provider: "mock" }]
                 ).map((opt) => (
                   <option key={opt.model_id} value={opt.model_id}>
                     {opt.label || opt.model_id}
+                    {opt.cost_per_second ? ` · ${opt.cost_per_second}/张` : ""}
                   </option>
                 ))}
               </select>
@@ -412,7 +572,9 @@ export default function WfInspector({
               label="参考图（可选）"
               hint="有图则按图生图意图；本轮模拟仍返回同一张占位图。"
             />
-            <p className="wf-field-hint">本轮不扣费。未接真模型时出占位图。</p>
+            <p className="wf-field-hint">
+              本地模拟不扣费；真图像渠道按「每张图片」扣费，Agent 触发生成时会先弹确认卡。
+            </p>
           </>
         )}
 

@@ -31,13 +31,14 @@ export const PALETTE: PaletteItem[] = [
   { type: "VideoAsset", label: "视频", hint: "上传片段" },
   { type: "AudioAsset", label: "音频", hint: "BGM / 旁白文件" },
   { type: "LlmText", label: "LLM", hint: "检查器选用途：对话 / Brief / 单镜" },
-  { type: "TextToImage", label: "文生图", hint: "文本 → 图；本轮本地模拟" },
+  { type: "TextToImage", label: "文生图", hint: "文本/参考图 → 首帧图" },
   { type: "ImageToVideo", label: "图生视频", hint: "一镜一段；无图则文生" },
   { type: "TtsSpeak", label: "TTS 口播", hint: "aisrv Edge TTS" },
   { type: "VideoTrim", label: "裁时长", hint: "裁画面秒数" },
   { type: "AudioTrim", label: "音频裁切", hint: "裁 BGM / 口播起止秒" },
   { type: "VideoMux", label: "真拼接", hint: "只拼画面；多镜手搭" },
   { type: "VideoDemux", label: "拆音轨", hint: "有声 → 静音+音频；无音轨失败" },
+  { type: "VideoReversePrompt", label: "视频反推", hint: "参考视频 → 分镜 prompt" },
   { type: "MixAudio", label: "混音", hint: "画面+BGM+口播，三口必接" },
   { type: "SubtitleBurn", label: "字幕", hint: "把 slogan 烧进成片" },
 ];
@@ -90,6 +91,18 @@ export function defaultData(type: WfNodeType, modelId = ""): WfData {
       return { nodeType: "MixAudio", label };
     case "VideoDemux":
       return { nodeType: "VideoDemux", label };
+    case "VideoReversePrompt":
+      return {
+        nodeType: "VideoReversePrompt",
+        label,
+        frame_count: 3,
+        frame_strategy: "scene_detect",
+        max_scenes: 6,
+        scene_threshold: 0.28,
+        sample_fps: 2,
+        prompt_style: "seedance",
+        prompt: "",
+      };
     case "AudioTrim":
       return { nodeType: "AudioTrim", label, trim_start: 0, trim_end: 0 };
     case "SubtitleBurn":
