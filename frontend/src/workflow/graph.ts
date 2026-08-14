@@ -1,6 +1,8 @@
 import type { Edge, Node } from "@xyflow/react";
+import { dropClosedNarrationEdges } from "./ports";
+import { syncWiredData } from "./sync";
 import { defaultData } from "./templates";
-import { normalizeNodeType, type WfData, type WfNodeType } from "./types";
+import { legacyLlmRole, normalizeNodeType, type WfData, type WfNodeType } from "./types";
 
 export function toApiGraph(nodes: Node<WfData>[], edges: Edge[]) {
   return {
@@ -38,11 +40,10 @@ export function fromApiGraph(
         "TextAsset",
     ) as WfNodeType;
     const nodeType = normalizeNodeType(declared);
-    const base = defaultData(nodeType, modelId);
-    // Preserve textRole hints from legacy types
-    let textRole = dataRaw.textRole;
-    if (!textRole && declared === "BriefInput") textRole = "brief";
-    if (!textRole && declared === "ScenePlan") textRole = "script";
+    const base = defaultData(declared, modelId);
+    const rawRole = String(dataRaw.textRole || "");
+    const textRole = rawRole === "script" ? "brief" : dataRaw.textRole;
+    const llmRole = dataRaw.llmRole || legacyLlmRole(declared) || base.llmRole;
     return {
       id,
       type: "media",
@@ -52,6 +53,7 @@ export function fromApiGraph(
         ...dataRaw,
         nodeType,
         textRole: textRole || base.textRole,
+        llmRole,
         label: dataRaw.label || base.label,
       },
     };
@@ -63,5 +65,6 @@ export function fromApiGraph(
     ...(e.sourceHandle ? { sourceHandle: String(e.sourceHandle) } : {}),
     ...(e.targetHandle ? { targetHandle: String(e.targetHandle) } : {}),
   }));
-  return { nodes, edges };
+  const kept = dropClosedNarrationEdges(nodes, edges);
+  return { nodes: syncWiredData(nodes, kept), edges: kept };
 }

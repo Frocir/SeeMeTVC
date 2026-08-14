@@ -5,12 +5,13 @@ import {
   type ProjectAsset,
   type Workflow,
 } from "../api";
-import { type WfNodeType } from "./templates";
-type KindFilter = "all" | "image" | "video" | "output";
+import { type WfNodeType } from "./types";
+type KindFilter = "all" | "image" | "video" | "audio" | "output";
 
 const KIND_LABEL: Record<string, string> = {
   image: "图",
   video: "视频",
+  audio: "音频",
   output: "成片",
 };
 
@@ -53,13 +54,16 @@ export default function ProjectAssetPanel({
     setBusy(true);
     setError("");
     try {
+      const isAudio = /\.(mp3|wav|m4a|aac)$/i.test(file.name) || file.type.startsWith("audio/");
       const isVideo = /\.(mp4|webm|mov)$/i.test(file.name) || file.type.startsWith("video/");
-      const up = await uploadFile(isVideo ? "/api/uploads/videos" : "/api/uploads/images", file);
+      const path = isAudio ? "/api/uploads/audio" : isVideo ? "/api/uploads/videos" : "/api/uploads/images";
+      const kind = isAudio ? "audio" : isVideo ? "video" : "image";
+      const up = await uploadFile(path, file);
       await api(`/api/workflows/${workflowId}/assets`, {
         method: "POST",
         body: JSON.stringify({
           url: up.url,
-          kind: isVideo ? "video" : "image",
+          kind,
           filename: up.filename,
         }),
       });
@@ -91,7 +95,7 @@ export default function ProjectAssetPanel({
     <div className="cv-section">
       <p className="eyebrow">本项目素材</p>
       <div className="cv-asset-filters">
-        {(["all", "image", "video", "output"] as const).map((k) => (
+        {(["all", "image", "video", "audio", "output"] as const).map((k) => (
           <button
             key={k}
             type="button"
@@ -108,14 +112,14 @@ export default function ProjectAssetPanel({
         disabled={busy}
         onClick={() => fileRef.current?.click()}
       >
-        <strong>上传图 / 视频</strong>
+        <strong>上传图 / 视频 / 音频</strong>
         <span>直接进本项目库</span>
       </button>
       <input
         ref={fileRef}
         type="file"
         hidden
-        accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
+        accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime,audio/mpeg,audio/wav,audio/mp4,audio/aac,.mp3,.wav,.m4a,.aac"
         onChange={(e) => {
           const f = e.target.files?.[0];
           e.target.value = "";
@@ -129,6 +133,8 @@ export default function ProjectAssetPanel({
           <div key={a.id} className="cv-asset-item">
             {/\.(mp4|webm|mov)(\?|$)/i.test(a.url) ? (
               <video className="cv-asset-thumb" src={a.url} muted playsInline preload="metadata" />
+            ) : /\.(mp3|wav|m4a|aac)(\?|$)/i.test(a.url) ? (
+              <audio className="cv-asset-thumb" src={a.url} controls preload="metadata" />
             ) : (
               <img className="cv-asset-thumb" src={a.url} alt="" />
             )}
@@ -140,7 +146,7 @@ export default function ProjectAssetPanel({
                 className="linkish"
                 onClick={() =>
                   onPlace(
-                    a.kind === "image" ? "ImageAsset" : "VideoAsset",
+                    a.kind === "image" ? "ImageAsset" : a.kind === "audio" ? "AudioAsset" : "VideoAsset",
                     a.url,
                     a.filename || "素材",
                   )

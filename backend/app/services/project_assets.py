@@ -28,10 +28,21 @@ def is_video_url(url: str | None) -> bool:
     return path.lower().endswith((".mp4", ".webm", ".mov"))
 
 
+def is_audio_url(url: str | None) -> bool:
+    if not url:
+        return False
+    path = urlparse(url).path if "://" in url else url
+    return path.lower().endswith((".mp3", ".wav", ".m4a", ".aac"))
+
+
 def _kind_from_url(url: str, forced: str | None = None) -> str:
     if forced:
         return forced
-    return "video" if is_video_url(url) else "image"
+    if is_video_url(url):
+        return "video"
+    if is_audio_url(url):
+        return "audio"
+    return "image"
 
 
 def _filename(url: str, fallback: str = "") -> str:
@@ -106,6 +117,7 @@ def _urls_from_graph(graph_json: str) -> list[tuple[str, str]]:
             ("clip_url", "video"),
             ("preview_url", None),
             ("result_url", "output"),
+            ("audio_url", "audio"),
         ):
             val = data.get(key)
             if isinstance(val, str) and val.strip():
@@ -124,7 +136,7 @@ async def sync_from_graph(db: AsyncSession, wf: Workflow) -> None:
 def last_image_from_graph(graph_json: str) -> str | None:
     found: str | None = None
     for url, kind in _urls_from_graph(graph_json):
-        if kind == "image" or (kind not in {"video", "output"} and not is_video_url(url)):
+        if kind == "image" or (kind not in {"video", "output", "audio"} and not is_video_url(url) and not is_audio_url(url)):
             found = url
     return found
 

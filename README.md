@@ -1,74 +1,108 @@
 # SeeMeTVC
 
-美妆 TVC 一体仓：项目里编排成片。FastAPI + React。IA 对齐 [原型图.html](原型图.html)；**现行路线**见 [细化方案.md](细化方案.md)。
+美妆短片工作台：左侧对话里的 **TVC Agent** 驱动中间节点画布出片。Agent = LLM + 进程内 MCP + Skill + 对话记忆。画布仍可手搭；人物一级库本轮空着。
 
-- **现行细化方案：** [细化方案.md](细化方案.md)
-- **产品计划书：** [项目计划书.md](项目计划书.md)（仓库不改此文件）
-- 画布参考：[LibTV Canvas](https://www.liblib.tv/canvas)
+默认账号写在仓库根目录 `.env.example`（`BOOTSTRAP_ADMIN_*`）。复制为 `.env` 后按需改口令与钥匙，不要提交。源码与镜像默认值里不再带这些密钥。
 
-## 当前能力
+## 怎么跑
 
-| 入口 | 说明 |
-|------|------|
-| `/` 工作区 | **我的项目**（1 项目 = 1 张编辑画布；封面优先成片，否则最后一张图） |
-| `/templates` 模板 | 官方模板 + Lookbook；选用后**新建项目**并打开 |
-| `/characters` 人物 | 空态（人物库暂搁） |
-| `/history` | 重定向到工作区 |
-| `/workflow/:id` | 该项目的编辑画布：保存、一键跑、SSE、trim/拼接、超管模拟；左侧节点 \| 素材 |
-| `/admin` 超管 | 渠道 / Key / 用户余额 / 流水 |
-| `/studio` | 一键出片暗门（不进左栏） |
-| `/showcase` | 重定向到 `/templates` |
-| `/login` | 登录 / 注册 |
-
-- 用户点余额芯片看流水；超管可打开某用户流水。每次余额变动落一行（含期初快照）
-- 上游：`Seedance LocalSimulate`（本地样片，依赖 ffmpeg） / `ark`（火山方舟 Seedance Lite + 2.5） / `agnes`（免费档易 429）
-- 项目实现层仍是 `/api/workflows`；素材见 `/api/workflows/:id/assets`。无全局历史
-- 浏览器只打相对路径 `/api`、`/uploads`。主机、端口、超管预填见仓库根目录 `.env`（模板 `.env.example`）。分域部署设 `VITE_API_BASE`
-- 空项目 / 没有可出片节点时，「一键跑」直接说明原因，不创建 Run
-- **下一个里程碑**：声音工作流（见 [细化方案.md](细化方案.md) §0 / §6）
-
-## 两种启动方式
-
-### A. Docker 一键（体验完整栈）
+本机开发（SQLite，不强制 Docker）：
 
 ```bash
-# 可选：复制公共环境变量
-copy .env.example .env   # Windows
-# cp .env.example .env  # macOS / Linux
+# 后端（需本机 ffmpeg；TTS 另起 aisrv 或 docker 里的 edge-tts）
+cd backend
+.venv\Scripts\activate    # Windows
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
+# 前端
+cd frontend
+npm install
+npm run dev
+```
+
+浏览器打开 Vite 端口（默认 5173），`/api` 会代理到后端。
+
+一整套（Postgres + API + Web + TTS）：
+
+```bash
 docker compose up --build
 ```
 
-- Web：nginx 静态站，端口见 `.env` 的 `WEB_PORT`（默认 5173）；`/api` 与 `/uploads` 已反代
-- API 健康检查：`API_PORT`（默认 8000）`/api/health`（镜像内已装 **ffmpeg**；库为 Postgres）
-- 改前端源码请用下方「本地开发」，不要指望 compose 里的 HMR
+超管在 **超管** 页启用渠道并填 Key：视频 / LLM / TTS / 文生图。无 Key 时可用「本地 LLM 模拟」「本地文生图模拟」、mock 视频。改 Agent 相关表后需重启一次后端。
 
-### B. 本地开发（改 UI / 热重载）
+## 全链路架构
 
-```bash
-# 仓库根目录复制一份公共 env（前后端 / compose 共用）
-copy .env.example .env
-
-# 后端（默认 SQLite → backend/seemetvc.db）
-cd backend && python -m venv .venv && .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# 前端（另开终端；Vite 按 .env 的 API_HOST/API_PORT 反代 /api）
-cd frontend && npm install && npm run dev
+```
+浏览器
+  工作区 / 模板 / 画布（节点 · 素材 · TVC Agent）
+       │  REST + SSE
+       ▼
+FastAPI  backend/
+  鉴权 · 项目 graph_json · 余额流水
+  Agent 循环（skill + 近 16 轮记忆 + 摘要）
+       ├─ LLM 渠道（OpenAI 兼容 / Anthropic / 本地模拟）
+       ├─ 进程内 MCP（改图 / run_*）──► 同一套 workflow 执行器
+       │                              target_ids 跑单节点
+       └─ 写库：对话、graph、撤销快照（最多 50 份）
+              │
+              ├─ 图生视频渠道（Seedance / Agnes / mock）
+              ├─ 文生图（目前仅本地占位图）
+              ├─ TTS → aisrv（Edge TTS，OpenAI speech 兼容）
+              └─ ffmpeg 裁切 / 拼接 / 混音 / 字幕
 ```
 
-- Web / API 端口、超管预填账号、CORS 都在仓库根目录 **`.env`**（模板：`.env.example`）
-- **真 Seedance / Pavo**：超管登录 →「超管」→ 对 Seedance 渠道「改 Key」写入**火山方舟 ARK_API_KEY** →「启用」。Lite / 2.5 共用同一把 Key；`upstream_model` 可改为控制台推理接入点 `ep-xxx`；离线演示为「本地seedance模拟版」
-- 有参考图 → 图生；无图 → 文生。2.5 默认 `generate_audio=true`；Lite 无原生音频
-- **ffmpeg**：本地模拟、trim、拼接都需要；本机 PATH 有 ffmpeg，或在根目录 `.env` 设 `FFMPEG_PATH`
-- Agnes 免费档易触发 429；演示全链路请优先用本地模拟或方舟
-- 超管账号见 `.env` 的 `BOOTSTRAP_ADMIN_*`（开发构建会预填登录页；`DEV_PREFILL_LOGIN=false` 可关）
+要点：
 
-## 典型流程
+- Agent 不另写一套出片引擎。`run_*` 就是现有节点执行，扣费仍走工作流 run。
+- MCP **不开放端口**，只给本进程 Agent 调。
+- Agent 回合内画布只读；每步改图立刻写入 `graph_json`，SSE 推全图。回合外仍手动保存。点发送时若有未保存手改，会先保存再开跑。
+- 会扣费的图生视频先出确认卡，暂停态落库，刷新后仍可确认 / 取消。
 
-1. 工作区新建项目（空白 = 单镜头快出，或选官方模板）→ 进入 `/workflow/:id`
-2. 按槽位连线；出口类上游变化可自动再跑（同时只跑一个 Run，可取消）
-3. 节点内看图/播视频；素材 Tab 可上传或复制到其他项目
-4. 超管失败时可粘贴/上传模拟结果（前端填入，不计费）
-5. 生成失败自动退款并丢掉该次 Run；成功则覆盖为当前成片，在工作区卡片 / 项目里回看
+## 已经具备
+
+**账号与后台**
+
+- 注册登录、超管渠道（视频 / LLM / TTS / 图）、余额与流水、失败退款（出片路径）。
+
+**项目与画布**
+
+- 工作区项目网格；进入画布手搭 DAG。
+- 节点：文本 / 图 / 视频 / 音频、LLM（对话 / Brief / 单镜）、文生图、图生视频、TTS、裁切、拼接、拆音轨、混音、烧字幕。
+- 官方模板可预填一条龙；可单节点跑或一键跑；输入变化可自动排队（Agent 改图时会抑制，避免抢跑）。
+- 素材库、上传、检查器改参。
+
+**TVC Agent**
+
+- 每项目一条对话线程，刷新还在。
+- Skill 下拉：`grill-me`（先问清 Brief）、`wes-anderson-tvc`（自研安德森风导演流程，不是 LibTV 副本）。规程在 `backend/app/skills/*/SKILL.md`。
+- 图工具：`get_graph` / `add_node` / `patch_node` / `connect` / `delete_node`。
+- 执行工具：每种可跑节点一个 `run_*`。
+- 流式：字、工具过程、画布更新、确认卡。
+- 顶栏撤销（服务端快照）。
+
+## 暂不具备，或明显偏弱
+
+- **本地 LLM 模拟几乎不会「当导演」**：只会按关键词加节点，不会认真 grill、也不会自己连线出片。真提问 / 真搭图需要已启用的真 LLM。
+- 文生图没有真模型，只有本地占位图。
+- MCP 不是对外 JSON-RPC 服务，Cursor 等连不上。
+- 没有「新对话」、没有跨项目记忆、没有 Skill 商店。
+- 人物一级库是空页；请在项目里上传图片。
+- 两个浏览器标签同时改同一项目会后写覆盖，没有合并。
+- 出片 SSE 可能被网关超时掐断；确认卡刷新可续，但长连接本身没做代理超时配置。
+- `connect` 的端口合法性比画布手连要松。
+- 无自动化测试覆盖 Agent。
+- 上线前密钥、限流、权限还要加固。
+
+## 改进计划（先做上面的）
+
+1. **无 Key 也能看懂 Agent**：模拟渠道按 Skill 走完整提问 + 加节点 + 连线（现在演示偏口号）。
+2. **有 Key 走通确认卡出片**：真 LLM 选导演 Skill → 搭图 → 图生视频确认 → 成片上节点。顺带核对长 SSE / 刷新后续确认。
+3. **文生图接真渠道**，与现有视频 / LLM / TTS 一样可配置、可扣费、可进确认卡。
+4. **连线规则与画布一致**，避免 Agent 接出检查器认为非法的边。
+5. **人物库做成能选进节点的资产**，不要长期停在空态。
+6. **需要时再外开 MCP 端口**（鉴权、只读/写图分权），给 Cursor 或其他 client。
+7. **多会话 / 新对话**（现在每项目永远一条线，旧 Brief 会一直占窗口，只能靠摘要）。
+8. **测试与上线加固**：Agent 循环、确认暂停、撤销、扣费退款的回归；密钥与限流。
+
+1–2 是「现在像不像真 Agent」；3–5 是创作闭环；6–8 是平台化。

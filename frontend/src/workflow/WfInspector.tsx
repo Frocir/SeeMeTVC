@@ -1,11 +1,16 @@
+import { useRef, useState } from "react";
 import ReferenceImageField from "../components/ReferenceImageField";
-import type { ModelOption } from "../api";
+import { uploadAudio, type ModelOption } from "../api";
 import { PROMPT_SNIPPETS, type PromptBucket } from "./prompts";
-import { normalizeNodeType, type WfData } from "./types";
+import { LLM_SYSTEM, TTS_VOICES, shotSystem } from "./templates";
+import { isLlmNodeType, normalizeNodeType, type WfData } from "./types";
 
 type Props = {
   data: WfData | null;
   models: ModelOption[];
+  llmModels?: ModelOption[];
+  ttsModels?: ModelOption[];
+  imageModels?: ModelOption[];
   modelId: string;
   onChange: (patch: Partial<WfData>) => void;
   onDelete: () => void;
@@ -39,9 +44,56 @@ function appendText(current: string | undefined, text: string): string {
   return `${cur}，${text}`;
 }
 
+function AudioUpload({ value, onChange }: { value: string; onChange: (url: string) => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function onFile(file: File | undefined) {
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await uploadAudio(file);
+      onChange(res.url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "上传失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <label>
+        音频地址
+        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="/uploads/… 或上传" />
+      </label>
+      <button type="button" className="ghost" disabled={busy} onClick={() => ref.current?.click()}>
+        {busy ? "上传中…" : "上传音频"}
+      </button>
+      <input
+        ref={ref}
+        type="file"
+        hidden
+        accept="audio/mpeg,audio/wav,audio/mp4,audio/aac,.mp3,.wav,.m4a,.aac"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = "";
+          void onFile(f);
+        }}
+      />
+      {value && <audio src={value} controls style={{ width: "100%", marginTop: "0.4rem" }} />}
+      {error && <p className="error">{error}</p>}
+      <p className="wf-field-hint">mp3 / wav / m4a / aac。官方模板预填演示床垫，可替换。</p>
+    </>
+  );
+}
+
 export default function WfInspector({
   data,
   models,
+  llmModels = [],
+  ttsModels = [],
+  imageModels = [],
   modelId,
   onChange,
   onDelete,
@@ -81,7 +133,6 @@ export default function WfInspector({
                 }
               >
                 <option value="brief">Brief</option>
-                <option value="script">剧本</option>
                 <option value="prompt">提示词</option>
                 <option value="notes">备注</option>
               </select>
@@ -121,28 +172,6 @@ export default function WfInspector({
               bucket="brief"
               onPick={(t) => onChange({ prompt: appendText(d.prompt, t), text: appendText(d.text, t) })}
             />
-            {(d.textRole === "script" || d.scene_count != null) && (
-              <>
-                <label>
-                  场景数量（整理草案用）
-                  <input
-                    type="number"
-                    min={1}
-                    max={5}
-                    step={1}
-                    value={d.scene_count ?? 3}
-                    onChange={(e) => onChange({ scene_count: Number(e.target.value) })}
-                    onBlur={(e) => {
-                      const n = Math.max(1, Math.min(5, Number(e.target.value) || 3));
-                      onChange({ scene_count: n });
-                    }}
-                  />
-                </label>
-                <p className="wf-field-hint">
-                  有效范围 <strong>1–5</strong>。仅用于本地拼装分镜草案文案，不会单独调 AI。
-                </p>
-              </>
-            )}
           </>
         )}
 
@@ -152,40 +181,8 @@ export default function WfInspector({
               value={d.image_url || ""}
               onChange={(url) => onChange({ image_url: url, stale: false })}
               label="图片"
-              hint="本地上传或粘贴 URL；下游图生视频优先用此图"
+              hint="上传或粘贴 URL。可接到文生图的参考图口，或图生视频。"
             />
-            <label>
-              妆容强度 {Math.round((d.intensity ?? 0.7) * 100)}%
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={d.intensity ?? 0.7}
-                onChange={(e) => onChange({ intensity: Number(e.target.value) })}
-              />
-            </label>
-            <p className="wf-field-hint">
-              会写入下游提示词里的「妆容强度」描述，<strong>不是</strong>真实修图/换妆模型。
-            </p>
-            <label>
-              妆前描述
-              <input
-                value={d.before_prompt || ""}
-                onChange={(e) => onChange({ before_prompt: e.target.value })}
-                placeholder="素颜 / 妆前状态"
-              />
-            </label>
-            <SnippetRow bucket="before" onPick={(t) => onChange({ before_prompt: t })} />
-            <label>
-              妆后描述
-              <input
-                value={d.after_prompt || ""}
-                onChange={(e) => onChange({ after_prompt: e.target.value })}
-                placeholder="妆后气色"
-              />
-            </label>
-            <SnippetRow bucket="after" onPick={(t) => onChange({ after_prompt: t })} />
           </>
         )}
 
@@ -297,24 +294,6 @@ export default function WfInspector({
                 </>
               );
             })()}
-            <label>
-              本节点镜头数
-              <input
-                type="number"
-                min={1}
-                max={5}
-                step={1}
-                value={d.max_shots ?? 1}
-                onChange={(e) => onChange({ max_shots: Number(e.target.value) })}
-                onBlur={(e) => {
-                  const n = Math.max(1, Math.min(5, Number(e.target.value) || 1));
-                  onChange({ max_shots: n });
-                }}
-              />
-            </label>
-            <p className="wf-field-hint">
-              有效 <strong>1–5</strong>。默认 1：一镜一段。大于 1 且上游带多段 scenes 时会<strong>连续生成多段并多次扣费</strong>；一般请再拖多个「图生视频」节点，而不是加大此数。
-            </p>
             <ReferenceImageField
               value={d.image_url || ""}
               onChange={(url) => onChange({ image_url: url })}
@@ -336,7 +315,7 @@ export default function WfInspector({
                 onChange={(e) => onChange({ trim_start: Number(e.target.value) })}
                 onBlur={(e) => {
                   const start = Math.max(0, Number(e.target.value) || 0);
-                  const end = d.trim_end ?? 4;
+                  const end = d.trim_end ?? 5;
                   onChange({
                     trim_start: start,
                     ...(end <= start ? { trim_end: start + 0.1 } : {}),
@@ -350,7 +329,7 @@ export default function WfInspector({
                 type="number"
                 min={0.1}
                 step={0.1}
-                value={d.trim_end ?? 4}
+                value={d.trim_end ?? 5}
                 onChange={(e) => onChange({ trim_end: Number(e.target.value) })}
                 onBlur={(e) => {
                   const start = d.trim_start ?? 0;
@@ -361,7 +340,7 @@ export default function WfInspector({
               />
             </label>
             <p className="wf-field-hint">
-              必须 <strong>结束秒 &gt; 起始秒</strong>。按上游成片时间轴裁切；若结束秒超过片长，ffmpeg 可能失败或裁出空结果。模板默认 0–4 秒，请按实际上游时长调整。
+              必须 <strong>结束秒 &gt; 起始秒</strong>。默认对齐图生时长（5 秒）。若结束秒超过片长，ffmpeg 可能失败。
             </p>
           </>
         )}
@@ -378,6 +357,262 @@ export default function WfInspector({
             <p className="wf-field-hint">
               当前拼接<strong>不会按此重编码改画幅</strong>，只写入结果元数据；成片比例取决于上游片段本身。
             </p>
+          </>
+        )}
+
+        {nt === "AudioAsset" && (
+          <AudioUpload
+            value={d.audio_url || ""}
+            onChange={(url) => onChange({ audio_url: url, stale: false })}
+          />
+        )}
+
+        {nt === "MixAudio" && (
+          <p className="wf-field-hint">
+            必须接满 <strong>video + BGM + 口播</strong> 三口，缺一则整单失败。BGM 循环到画面时长；口播不循环、超长裁切。
+          </p>
+        )}
+
+        {nt === "VideoDemux" && (
+          <p className="wf-field-hint">
+            有声视频 → 静音画面 + 音轨。<strong>无音轨会整单失败</strong>。官方模板未预接；2.5
+            原声会叠在混音下，要干净请先接本节点。
+          </p>
+        )}
+
+        {nt === "TextToImage" && (
+          <>
+            <label>
+              文生图模型
+              <select
+                value={d.model_id || imageModels[0]?.model_id || "t2i-local-simulate"}
+                onChange={(e) => onChange({ model_id: e.target.value })}
+              >
+                {(imageModels.length
+                  ? imageModels
+                  : [{ model_id: "t2i-local-simulate", label: "本地文生图模拟" }]
+                ).map((opt) => (
+                  <option key={opt.model_id} value={opt.model_id}>
+                    {opt.label || opt.model_id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              提示词（可被上游覆盖）
+              <textarea
+                rows={3}
+                value={d.prompt || d.text || ""}
+                onChange={(e) => onChange({ prompt: e.target.value, text: e.target.value })}
+              />
+            </label>
+            <ReferenceImageField
+              value={d.image_url || ""}
+              onChange={(url) => onChange({ image_url: url })}
+              label="参考图（可选）"
+              hint="有图则按图生图意图；本轮模拟仍返回同一张占位图。"
+            />
+            <p className="wf-field-hint">本轮不扣费。未接真模型时出占位图。</p>
+          </>
+        )}
+
+        {nt === "AudioTrim" && (
+          <>
+            <label>
+              起始秒
+              <input
+                type="number"
+                min={0}
+                step={0.1}
+                value={d.trim_start ?? 0}
+                onChange={(e) => onChange({ trim_start: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              结束秒（0 = 整段）
+              <input
+                type="number"
+                min={0}
+                step={0.1}
+                value={d.trim_end ?? 0}
+                onChange={(e) => onChange({ trim_end: Number(e.target.value) })}
+              />
+            </label>
+            <p className="wf-field-hint">结束秒为 0 或不大于起始秒时，整段直通。</p>
+          </>
+        )}
+
+        {nt === "SubtitleBurn" && (
+          <>
+            <label>
+              字幕文本
+              <input
+                value={d.text || d.slogan || ""}
+                onChange={(e) => onChange({ text: e.target.value })}
+                placeholder="空则用上游口号；都空则直通"
+              />
+            </label>
+            <p className="wf-field-hint">烧在画面下部。不对口型。无字则直通视频，不失败。</p>
+          </>
+        )}
+
+        {nt === "TtsSpeak" && (
+          <>
+            <label>
+              TTS 模型
+              <select
+                value={d.model_id || ttsModels[0]?.model_id || "tts-1"}
+                onChange={(e) => onChange({ model_id: e.target.value })}
+              >
+                {(ttsModels.length ? ttsModels : [{ model_id: "tts-1", label: "tts-1" }]).map((opt) => (
+                  <option key={opt.model_id} value={opt.model_id}>
+                    {opt.label || opt.model_id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              音色
+              <select
+                value={d.voice || "zh-CN-XiaoxiaoNeural"}
+                onChange={(e) => onChange({ voice: e.target.value })}
+              >
+                {TTS_VOICES.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              口播文本（可被上游 narration 覆盖）
+              <textarea
+                rows={3}
+                value={d.text || d.prompt || ""}
+                onChange={(e) => onChange({ text: e.target.value, prompt: e.target.value })}
+              />
+            </label>
+          </>
+        )}
+
+        {isLlmNodeType(nt) && (
+          <>
+            <label>
+              用途
+              <select
+                value={d.llmRole || "shot"}
+                onChange={(e) => {
+                  const role = e.target.value as "chat" | "brief" | "shot";
+                  if (role === "shot") {
+                    onChange({
+                      llmRole: role,
+                      wantNarration: true,
+                      system_prompt: shotSystem(true),
+                    });
+                    return;
+                  }
+                  onChange({
+                    llmRole: role,
+                    wantNarration: false,
+                    system_prompt: LLM_SYSTEM[role],
+                  });
+                }}
+              >
+                <option value="chat">对话</option>
+                <option value="brief">Brief</option>
+                <option value="shot">单镜</option>
+              </select>
+            </label>
+            <label>
+              LLM 模型
+              <select
+                value={d.model_id || llmModels[0]?.model_id || ""}
+                onChange={(e) => onChange({ model_id: e.target.value })}
+              >
+                {llmModels.length === 0 && <option value="">（无可用 LLM）</option>}
+                {llmModels.map((opt) => (
+                  <option key={opt.model_id} value={opt.model_id}>
+                    {opt.label || opt.model_id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {(d.llmRole || "shot") === "shot" && (
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={d.wantNarration !== false}
+                  onChange={(e) => {
+                    const want = e.target.checked;
+                    const cur = d.system_prompt ?? "";
+                    const isDefault =
+                      !cur || cur === LLM_SYSTEM.shot || cur === LLM_SYSTEM.shotSilent;
+                    onChange({
+                      wantNarration: want,
+                      ...(isDefault ? { system_prompt: shotSystem(want) } : {}),
+                      ...(!want ? { narration: "" } : {}),
+                    });
+                  }}
+                />
+                输出旁白
+              </label>
+            )}
+            <label>
+              System prompt
+              <textarea
+                rows={4}
+                value={
+                  d.system_prompt ??
+                  ((d.llmRole || "shot") === "shot"
+                    ? shotSystem(d.wantNarration !== false)
+                    : LLM_SYSTEM[(d.llmRole || "shot") as keyof typeof LLM_SYSTEM] ?? "")
+                }
+                onChange={(e) => onChange({ system_prompt: e.target.value })}
+              />
+            </label>
+            <label>
+              用户补充
+              <textarea
+                rows={3}
+                value={d.prompt || d.text || ""}
+                onChange={(e) => onChange({ prompt: e.target.value, text: e.target.value })}
+                placeholder="可空：只用上游 text"
+              />
+            </label>
+            <p className="wf-field-hint">
+              {(d.model_id || llmModels[0]?.model_id) === "llm-local-simulate"
+                ? "本地 LLM 模拟：即时返回，不调上游。"
+                : "真模型会走外网；约 20 秒未响应即失败。演示请改选「本地 LLM 模拟」。"}
+              {(d.llmRole || "shot") === "shot"
+                ? d.wantNarration === false
+                  ? " 单镜只出画面 prompt，不写旁白。"
+                  : " 单镜输出 JSON：prompt + narration。解析失败整单失败。"
+                : ""}
+            </p>
+            {(d.runStatus === "succeeded" || d.narration || d.runOutput?.prompt || d.runOutput?.text) && (
+              <div className="wf-run-out">
+                <p className="eyebrow">生成结果</p>
+                {(d.llmRole || "shot") === "shot" ? (
+                  <>
+                    <label>
+                      画面 prompt
+                      <textarea rows={4} readOnly value={String(d.runOutput?.prompt || d.prompt || "")} />
+                    </label>
+                    {d.wantNarration !== false && (
+                      <label>
+                        旁白 narration
+                        <textarea rows={3} readOnly value={String(d.runOutput?.narration || d.narration || "")} />
+                      </label>
+                    )}
+                  </>
+                ) : (
+                  <label>
+                    正文
+                    <textarea rows={5} readOnly value={String(d.runOutput?.text || d.text || d.prompt || "")} />
+                  </label>
+                )}
+              </div>
+            )}
           </>
         )}
 

@@ -18,17 +18,16 @@ export default defineConfig(({ mode }) => {
   const webPort = Number(env.WEB_PORT || env.VITE_DEV_PORT || 5173);
   const webHost = env.WEB_HOST === "true" || !env.WEB_HOST ? true : env.WEB_HOST;
   const prefillOn = mode === "development" && env.DEV_PREFILL_LOGIN !== "false";
+  const prefillEmail = env.BOOTSTRAP_ADMIN_EMAIL || "";
+  const prefillPassword = env.BOOTSTRAP_ADMIN_PASSWORD || "";
 
   return {
     envDir: repoRoot,
     plugins: [react()],
     define: {
       __DEV_LOGIN__: JSON.stringify(
-        prefillOn
-          ? {
-              email: env.BOOTSTRAP_ADMIN_EMAIL || "",
-              password: env.BOOTSTRAP_ADMIN_PASSWORD || "",
-            }
+        prefillOn && prefillEmail && prefillPassword
+          ? { email: prefillEmail, password: prefillPassword }
           : { email: "", password: "" },
       ),
     },

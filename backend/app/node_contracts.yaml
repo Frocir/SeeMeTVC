@@ -1,0 +1,342 @@
+# TVC Agent 节点规约（唯一源）。人可读；预检 / Agent 卡片 / connect 均由此加载。
+
+kind_compat:
+  text: [text, prompt]
+  image: [image]
+  video: [video]
+  audio: [audio, bgm, vo]
+  narration: [text, prompt]
+  prompt: [prompt, text]
+  bgm: [bgm, audio]
+  vo: [vo, audio]
+
+forbid_edges:
+  - source_type: TtsSpeak
+    target_type: MixAudio
+    target_handle: bgm
+    message: 口播不能接到混音的 BGM 口。请把 TTS / 音频裁切接到「口播」。
+  - source_type: AudioTrim
+    source_fed_by: TtsSpeak
+    target_type: MixAudio
+    target_handle: bgm
+    message: 口播不能接到混音的 BGM 口。请把 TTS / 音频裁切接到「口播」。
+
+# 省略 handle 时的智能默认。MixAudio 的 bgm/vo 不在此列：必须写明 target_handle。
+connect_defaults:
+  - source_kind: text
+    prefer_target: [prompt, text]
+  - source_kind: narration
+    prefer_target: [text, prompt]
+  - source_kind: image
+    prefer_target: [image]
+  - source_kind: video
+    prefer_target: [video]
+  - source_kind: audio
+    prefer_target: [audio]
+    # MixAudio 的 audio 口是 bgm/vo，见 no_default_target_handles
+no_default_target_handles: [bgm, vo]
+
+recipes:
+  - id: silent_shot
+    label: 无声单镜
+    when: 只要画面、不要口播/BGM
+    chain: TextAsset 或 LlmText(shot, wantNarration=false) → TextToImage（可选）→ ImageToVideo
+    must: 图生视频必须有 prompt（节点内或接到 prompt 口）。不要加 TTS / MixAudio。
+  - id: vo_mix
+    label: 口播+混音
+    when: 要旁白和配乐
+    chain: Brief → LlmText(shot) → ImageToVideo；旁白 → TtsSpeak → MixAudio.vo；AudioAsset(BGM) → MixAudio.bgm；视频 → MixAudio.video
+    must: MixAudio 三口 video / bgm / vo 必须都接，且写明 handle。
+  - id: multi_shot
+    label: 多镜拼接
+    when: 2 镜及以上
+    chain: 每镜一条 ImageToVideo（可经 VideoTrim）→ VideoMux；成片若要声音再进 MixAudio
+    must: 一键跑只能有一条相连的生产链，不要在画布上放第二条互不相连的图。
+
+nodes:
+  TextAsset:
+    group: asset
+    label: 文本
+    exit: false
+    orphan: ignore
+    channel: null
+    run_tool: null
+    purpose: 手写 Brief、卖点、口号、镜头提示词。
+    when: 用户已有文案，或要把确认过的 Brief 钉在画布上。
+    when_not: 不要用它代替 LLM 去「生成」文案。
+    fields: [brand, selling_points, slogan, prompt, text]
+    inputs: []
+    outputs:
+      - { id: text, kind: text }
+
+  ImageAsset:
+    group: asset
+    label: 图片
+    exit: false
+    orphan: ignore
+    channel: null
+    run_tool: null
+    purpose: 上传或引用一张参考图 / 产品图。
+    when: 已有画面，要接到文生图参考口或图生视频 image 口。
+    when_not: 没有图时不要空放这个节点；用 TextToImage 生成。
+    fields: [image_url]
+    in_chain_fields: [image_url]
+    in_chain_missing: 「{label}」没有图片，请上传或改用文生图。
+    inputs: []
+    outputs:
+      - { id: image, kind: image }
+
+  VideoAsset:
+    group: asset
+    label: 视频
+    exit: false
+    orphan: ignore
+    channel: null
+    run_tool: null
+    purpose: 上传已有视频片段，或作为下游视频的承接。
+    when: 用户提供成片/片段，或要接住上游视频。
+    when_not: 空节点不要放进一键跑链路。
+    fields: [clip_url, result_url, preview_url]
+    inputs:
+      - id: video
+        kind: video
+        required: edge_or_fields
+        fields: [clip_url, result_url, preview_url]
+        missing: 「{label}」缺少视频：请上传片段，或接上游视频。
+    outputs:
+      - { id: video, kind: video }
+
+  AudioAsset:
+    group: asset
+    label: 音频
+    exit: false
+    orphan: ignore
+    channel: null
+    run_tool: null
+    purpose: 上传 BGM 或口播音频文件。
+    when: 混音需要 BGM/口播文件，且不是 TTS 生成。
+    when_not: 口播能 TTS 就不要空 AudioAsset。接到混音时文件必须已上传。
+    fields: [audio_url, result_url]
+    in_chain_fields: [audio_url, result_url]
+    in_chain_missing: 「{label}」缺少音频文件，请上传 BGM 或口播。
+    inputs: []
+    outputs:
+      - { id: audio, kind: audio }
+
+  LlmText:
+    group: produce
+    label: LLM
+    exit: false
+    orphan: full_run_forbid
+    channel: llm
+    run_tool: run_llm_text
+    purpose: 根据 Brief 或上游文本生成 Brief / 单镜 prompt+旁白。
+    when: 需要模型写文案或分镜。llmRole=brief|shot|chat；单镜默认 shot。
+    when_not: 没有输入（无上游且节点内无正文）时不要一键跑。不要悬空不接到出片节点。
+    fields: [prompt, text, brand, selling_points, slogan, llmRole, wantNarration, system_prompt, model_id]
+    inputs:
+      - id: text
+        kind: text
+        required: edge_or_fields
+        fields: [prompt, text, brand, selling_points, slogan]
+        missing: 「{label}」缺少输入：请连接上游文本，或在节点填写正文。
+    outputs:
+      - { id: text, kind: text }
+      - { id: narration, kind: text }
+
+  TtsSpeak:
+    group: produce
+    label: TTS 口播
+    exit: false
+    orphan: full_run_forbid
+    channel: tts
+    run_tool: run_tts_speak
+    purpose: 把旁白/正文合成口播音频。
+    when: 成片需要人声，且没有现成口播文件。
+    when_not: 无声成片不要加。必须接到 MixAudio 的 vo 口，禁止接 bgm。
+    fields: [text, voice, model_id]
+    inputs:
+      - id: text
+        kind: text
+        required: edge_or_fields
+        fields: [text, narration, prompt]
+        missing: 「{label}」缺少口播文本：请连接 narration 或填写正文。
+    outputs:
+      - { id: audio, kind: audio }
+
+  TextToImage:
+    group: finish
+    label: 文生图
+    exit: true
+    orphan: ignore
+    channel: image
+    run_tool: run_text_to_image
+    purpose: 文本生成图片，可带参考图。
+    when: 需要静帧，或给图生视频提供 image。
+    when_not: 已有产品图时优先 ImageAsset。必须有提示词。
+    fields: [prompt, text, image_url, model_id]
+    inputs:
+      - id: prompt
+        kind: text
+        required: edge_or_fields
+        fields: [prompt, text]
+        missing: 「{label}」缺少提示词：请连接 prompt，或在节点填写。
+      - { id: image, kind: image, required: optional }
+    outputs:
+      - { id: image, kind: image }
+
+  ImageToVideo:
+    group: finish
+    label: 图生视频
+    exit: true
+    orphan: ignore
+    channel: video
+    run_tool: run_image_to_video
+    purpose: 一镜一段视频。有图走图生；无图且有 prompt 则文生视频。
+    when: 需要出视频。扣费，须等用户确认卡。
+    when_not: 没有 prompt（节点内或 prompt 口）时不要跑。文本必须接到 prompt 口，不要接到 image 口。
+    fields: [prompt, text, image_url, model_id, duration_seconds, aspect]
+    inputs:
+      - id: prompt
+        kind: text
+        required: edge_or_fields
+        fields: [prompt, text]
+        missing: 「{label}」缺少有效提示词：请在节点填写「镜头提示词」，或把文本接到 prompt 槽。
+      - { id: image, kind: image, required: optional }
+    outputs:
+      - { id: video, kind: video }
+
+  VideoTrim:
+    group: finish
+    label: 裁时长
+    exit: true
+    orphan: ignore
+    channel: null
+    run_tool: run_video_trim
+    purpose: 裁切视频起止秒。
+    when: 镜头过长，或对齐口播时长。
+    when_not: 没有上游视频时不要单独放。
+    fields: [trim_start, trim_end, clip_url, result_url, preview_url]
+    inputs:
+      - id: video
+        kind: video
+        required: edge_or_fields
+        fields: [clip_url, result_url, preview_url]
+        missing: 「{label}」缺少输入视频。
+    outputs:
+      - { id: video, kind: video }
+
+  VideoMux:
+    group: finish
+    label: 真拼接
+    exit: true
+    orphan: ignore
+    channel: null
+    run_tool: run_video_mux
+    purpose: 把多段视频按连接顺序拼成一条。
+    when: 多镜成片。
+    when_not: 单镜不要加。必须有上游视频。
+    fields: [aspect, clip_url, result_url]
+    inputs:
+      - id: video
+        kind: video
+        required: edge_or_fields
+        fields: [clip_url, result_url, preview_url]
+        missing: 「{label}」缺少输入视频。
+    outputs:
+      - { id: video, kind: video }
+
+  MixAudio:
+    group: finish
+    label: 混音
+    exit: true
+    orphan: ignore
+    channel: null
+    run_tool: run_mix_audio
+    purpose: 画面 + BGM + 口播合成有声成片。
+    when: 用户要配乐和/或口播。
+    when_not: 三口未接满不要跑。connect 必须写 target_handle=video|bgm|vo。
+    fields: []
+    inputs:
+      - id: video
+        kind: video
+        required: edge
+        missing: 「混音」必须接满 video、BGM、口播 三个输入。缺少：{missing}。
+      - id: bgm
+        kind: audio
+        required: edge
+        missing: 「混音」必须接满 video、BGM、口播 三个输入。缺少：{missing}。
+        source_fields:
+          AudioAsset: [audio_url, result_url]
+        source_fields_missing: 「混音」的 BGM 口所接音频节点没有文件，请上传或使用演示床垫。
+      - id: vo
+        kind: audio
+        required: edge
+        missing: 「混音」必须接满 video、BGM、口播 三个输入。缺少：{missing}。
+        source_fields:
+          AudioAsset: [audio_url, result_url]
+        source_fields_missing: 「混音」的口播口所接音频节点没有文件。
+    outputs:
+      - { id: video, kind: video }
+
+  VideoDemux:
+    group: finish
+    label: 拆音轨
+    exit: true
+    orphan: ignore
+    channel: null
+    run_tool: run_video_demux
+    purpose: 有声视频拆成静画 + 音轨。
+    when: 要换 BGM/口播，先拆原声。
+    when_not: 无音轨的视频会失败。必须有上游视频。
+    fields: [clip_url, result_url, audio_url]
+    inputs:
+      - id: video
+        kind: video
+        required: edge_or_fields
+        fields: [clip_url, result_url, preview_url]
+        missing: 「{label}」缺少输入视频。
+    outputs:
+      - { id: video, kind: video }
+      - { id: audio, kind: audio }
+
+  AudioTrim:
+    group: finish
+    label: 音频裁切
+    exit: true
+    orphan: ignore
+    channel: null
+    run_tool: run_audio_trim
+    purpose: 裁 BGM 或口播起止。
+    when: 音频比画面长/短需要对齐。
+    when_not: 没有上游音频时不要放。若裁的是 TTS，接到混音时仍走 vo 口。
+    fields: [trim_start, trim_end, audio_url]
+    inputs:
+      - id: audio
+        kind: audio
+        required: edge_or_fields
+        fields: [audio_url]
+        missing: 「{label}」缺少输入音频。
+    outputs:
+      - { id: audio, kind: audio }
+
+  SubtitleBurn:
+    group: finish
+    label: 字幕
+    exit: true
+    orphan: ignore
+    channel: null
+    run_tool: run_subtitle_burn
+    purpose: 把口号/字幕烧进成片。
+    when: 需要画面上的字。
+    when_not: 没有视频输入时不要跑。
+    fields: [text, slogan]
+    inputs:
+      - id: video
+        kind: video
+        required: edge_or_fields
+        fields: [clip_url, result_url, preview_url]
+        missing: 「{label}」缺少输入视频。
+      - { id: text, kind: text, required: optional }
+    outputs:
+      - { id: video, kind: video }

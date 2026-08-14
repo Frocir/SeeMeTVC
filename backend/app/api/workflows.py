@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user
-from app.models import ProjectAsset, User, Workflow, WorkflowRun, WorkflowRunStatus
+from app.models import Channel, ProjectAsset, User, Workflow, WorkflowRun, WorkflowRunStatus
 from app.schemas import (
     ProjectAssetCopyIn,
     ProjectAssetCreateIn,
@@ -19,6 +19,7 @@ from app.schemas import (
     WorkflowRunOut,
     WorkflowUpdateIn,
 )
+from app.services.graph_revisions import persist_graph, undo_graph
 from app.services.project_assets import (
     brand_from_graph,
     collect_upload_paths,
@@ -158,7 +159,18 @@ async def start_run(
     if graph_dict is None:
         raise HTTPException(status_code=400, detail="请提供项目或画布数据")
 
-    reason = cannot_run_reason(graph_dict, target_ids=list(body.target_ids or []))
+    ch_rows = (
+        await db.execute(select(Channel).where(Channel.enabled.is_(True)))
+    ).scalars().all()
+    kinds = {(c.kind or "video").strip().lower() or "video" for c in ch_rows}
+    reason = cannot_run_reason(
+        graph_dict,
+        target_ids=list(body.target_ids or []),
+        has_video_model="video" in kinds,
+        has_llm_model="llm" in kinds,
+        has_tts_model="tts" in kinds,
+        has_image_model="image" in kinds,
+    )
     if reason:
         raise HTTPException(status_code=400, detail=reason)
 
@@ -331,11 +343,32 @@ async def update_workflow(
     if body.brand is not None:
         wf.brand = body.brand.strip() or wf.brand
     if body.graph is not None:
-        wf.graph_json = _graph_dumps(body.graph.model_dump())
+        dumped = body.graph.model_dump()
+        await persist_graph(db, wf, dumped, source="user_save")
         if not (body.brand or "").strip():
             wf.brand = brand_from_graph(wf.graph_json)
         await sync_from_graph(db, wf)
         await refresh_cover(db, wf)
+    await db.commit()
+    await db.refresh(wf)
+    return _workflow_out(wf)
+
+
+@router.post("/{workflow_id}/undo", response_model=WorkflowOut)
+async def undo_workflow(
+    workflow_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowOut:
+    wf = await db.get(Workflow, workflow_id)
+    if wf is None or wf.user_id != user.id:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    try:
+        await undo_graph(db, wf)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await sync_from_graph(db, wf)
+    await refresh_cover(db, wf)
     await db.commit()
     await db.refresh(wf)
     return _workflow_out(wf)

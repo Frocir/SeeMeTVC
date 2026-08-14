@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -5,11 +7,20 @@ from app.config import get_settings
 from app.models import Channel, User, UserRole
 from app.security import hash_password
 
+_log = logging.getLogger("seemetvc.bootstrap")
+
 AGNES_CHANNEL_NAME = "Agnes AI Pavo (free)"
 LOCAL_SIM_CHANNEL_NAME = "本地seedance模拟版（Seedance LocalSimulate）"
 LITE_CHANNEL_NAME = "Seedance Lite（火山方舟）"
 SEEDANCE25_CHANNEL_NAME = "Seedance 2.5（火山方舟）"
 LOCAL_SIM_MODEL_ID = "seedance-local-simulate"
+OPENAI_LLM_CHANNEL_NAME = "OpenAI 兼容 · 对话"
+ANTHROPIC_LLM_CHANNEL_NAME = "Anthropic · 对话"
+TTS_CHANNEL_NAME = "Edge TTS（aisrv）"
+IMAGE_SIM_CHANNEL_NAME = "本地文生图模拟"
+IMAGE_SIM_MODEL_ID = "t2i-local-simulate"
+LLM_SIM_CHANNEL_NAME = "本地 LLM 模拟"
+LLM_SIM_MODEL_ID = "llm-local-simulate"
 
 LITE_PRIORITY = 80
 SEEDANCE25_PRIORITY = 70
@@ -41,18 +52,27 @@ async def ensure_bootstrap_data(db: AsyncSession) -> None:
     settings = get_settings()
     result = await db.execute(select(User).where(User.email == settings.bootstrap_admin_email))
     admin = result.scalar_one_or_none()
+    password = (settings.bootstrap_admin_password or "").strip()
     if admin is None:
-        admin = User(
-            email=settings.bootstrap_admin_email,
-            password_hash=hash_password(settings.bootstrap_admin_password),
-            display_name="Super Admin",
-            role=UserRole.SUPER_ADMIN.value,
-            balance=10000.0,
-        )
-        db.add(admin)
+        if len(password) < 6:
+            _log.warning(
+                "未设置 BOOTSTRAP_ADMIN_PASSWORD（至少 6 位），跳过创建超管。请写在仓库根目录 .env。"
+            )
+        else:
+            admin = User(
+                email=settings.bootstrap_admin_email,
+                password_hash=hash_password(password),
+                display_name="Super Admin",
+                role=UserRole.SUPER_ADMIN.value,
+                balance=10000.0,
+            )
+            db.add(admin)
 
     await _ensure_seedance_channels(db)
     await _ensure_agnes_channel(db)
+    await _ensure_llm_channels(db)
+    await _ensure_tts_channel(db)
+    await _ensure_image_channel(db)
     await _heal_channels(db)
     await db.commit()
 
@@ -91,6 +111,8 @@ async def _ensure_seedance_channels(db: AsyncSession) -> None:
             select(Channel).where(Channel.provider == "mock").order_by(Channel.id.asc()).limit(1)
         )
         local = result.scalar_one_or_none()
+        if local is not None and (local.kind or "") in {"llm", "image", "tts"}:
+            local = None
 
     local_remark = (
         "本地 ffmpeg 样片（离线演示，非真实 Seedance）。"
@@ -108,6 +130,7 @@ async def _ensure_seedance_channels(db: AsyncSession) -> None:
                 cost_per_second=0.0,
                 priority=LOCAL_SIM_PRIORITY_OFFLINE,
                 enabled=True,
+                kind="video",
                 remark=local_remark,
             )
         )
@@ -193,6 +216,7 @@ async def _ensure_ark_model_channel(
                 cost_per_second=cost,
                 priority=priority,
                 enabled=False,
+                kind="video",
                 remark=remark,
             )
         )
@@ -200,6 +224,7 @@ async def _ensure_ark_model_channel(
 
     ch.name = name
     ch.provider = "ark"
+    ch.kind = "video"
     ch.base_url = ARK_BASE
     ch.model_id = model_id
     # Migrate away from fal upstream paths
@@ -228,6 +253,7 @@ async def _ensure_agnes_channel(db: AsyncSession) -> None:
                 cost_per_second=0.0,
                 priority=AGNES_PRIORITY,
                 enabled=False,
+                kind="video",
                 remark=(
                     "免费 Agnes AI Pavo（agnes-video-v2.0）。默认关闭。"
                     "超管「改 Key」写入后启用。"
@@ -239,6 +265,154 @@ async def _ensure_agnes_channel(db: AsyncSession) -> None:
             agnes.base_url = settings.agnes_base_url.rstrip("/") or "https://api.agnes-ai.cn"
         if not (agnes.upstream_model or "").strip():
             agnes.upstream_model = settings.agnes_upstream_model or "agnes-video-v2.0"
+        agnes.kind = "video"
+
+
+async def _ensure_llm_channels(db: AsyncSession) -> None:
+    sim = await _get_by_name(db, LLM_SIM_CHANNEL_NAME)
+    sim_remark = "本地即时文案（不调上游、不扣费）。真模型请另启用 OpenAI / Anthropic 并填 Key。"
+    if sim is None:
+        db.add(
+            Channel(
+                name=LLM_SIM_CHANNEL_NAME,
+                provider="mock",
+                kind="llm",
+                base_url="",
+                api_key="",
+                model_id=LLM_SIM_MODEL_ID,
+                upstream_model="local-simulate",
+                cost_per_second=0.0,
+                priority=95,
+                enabled=True,
+                remark=sim_remark,
+            )
+        )
+    else:
+        sim.kind = "llm"
+        sim.provider = "mock"
+        sim.model_id = LLM_SIM_MODEL_ID
+        sim.upstream_model = "local-simulate"
+        sim.enabled = True
+        sim.remark = sim_remark
+
+    openai = await _get_by_name(db, OPENAI_LLM_CHANNEL_NAME)
+    if openai is None:
+        # Don't resurrect the official row if the admin deleted it and already
+        # has another OpenAI-compatible LLM channel.
+        existing = await db.execute(
+            select(Channel).where(Channel.kind == "llm", Channel.provider == "openai").limit(1)
+        )
+        if existing.scalar_one_or_none() is None:
+            db.add(
+                Channel(
+                    name=OPENAI_LLM_CHANNEL_NAME,
+                    provider="openai",
+                    kind="llm",
+                    base_url="https://api.openai.com/v1",
+                    api_key="",
+                    model_id="gpt-4o-mini",
+                    upstream_model="gpt-4o-mini",
+                    cost_per_second=0.0,
+                    priority=60,
+                    enabled=False,
+                    remark="OpenAI 兼容 Chat Completions。超管改 Key 后启用。也可把 base_url 改成网关。",
+                )
+            )
+    else:
+        openai.kind = "llm"
+        if not (openai.base_url or "").strip():
+            openai.base_url = "https://api.openai.com/v1"
+
+    anthropic = await _get_by_name(db, ANTHROPIC_LLM_CHANNEL_NAME)
+    if anthropic is None:
+        existing = await db.execute(
+            select(Channel).where(Channel.kind == "llm", Channel.provider == "anthropic").limit(1)
+        )
+        if existing.scalar_one_or_none() is None:
+            db.add(
+                Channel(
+                    name=ANTHROPIC_LLM_CHANNEL_NAME,
+                    provider="anthropic",
+                    kind="llm",
+                    base_url="https://api.anthropic.com",
+                    api_key="",
+                    model_id="claude-sonnet-4-5",
+                    upstream_model="claude-sonnet-4-5",
+                    cost_per_second=0.0,
+                    priority=50,
+                    enabled=False,
+                    remark="Anthropic Messages API（x-api-key）。超管改 Key 后启用。自定义网关请另建一条。",
+                )
+            )
+    else:
+        anthropic.kind = "llm"
+        if not (anthropic.base_url or "").strip():
+            anthropic.base_url = "https://api.anthropic.com"
+
+
+async def _ensure_tts_channel(db: AsyncSession) -> None:
+    settings = get_settings()
+    key = (settings.aisrv_api_key or "").strip()
+    base = settings.aisrv_url
+    ch = await _get_by_name(db, TTS_CHANNEL_NAME)
+    remark = (
+        "本机 aisrv（travisvn/openai-edge-tts 镜像）。OpenAI /v1/audio/speech。"
+        "钥匙来自 .env 的 AISRV_API_KEY，超管仍可改。"
+    )
+    if ch is None:
+        db.add(
+            Channel(
+                name=TTS_CHANNEL_NAME,
+                provider="openai",
+                kind="tts",
+                base_url=base,
+                api_key=key,
+                model_id="tts-1",
+                upstream_model="tts-1",
+                cost_per_second=0.0,
+                priority=90,
+                enabled=_looks_like_real_key(key),
+                remark=remark,
+            )
+        )
+        return
+    ch.kind = "tts"
+    ch.provider = "openai"
+    ch.base_url = base
+    ch.model_id = ch.model_id or "tts-1"
+    ch.upstream_model = ch.upstream_model or "tts-1"
+    ch.remark = remark
+    if not (ch.api_key or "").strip() and _looks_like_real_key(key):
+        ch.api_key = key
+        ch.enabled = True
+
+
+async def _ensure_image_channel(db: AsyncSession) -> None:
+    ch = await _get_by_name(db, IMAGE_SIM_CHANNEL_NAME)
+    remark = "本地占位图（本轮不接真模型，不扣费）。超管可见 kind=image。"
+    if ch is None:
+        db.add(
+            Channel(
+                name=IMAGE_SIM_CHANNEL_NAME,
+                provider="mock",
+                kind="image",
+                base_url="",
+                api_key="",
+                model_id=IMAGE_SIM_MODEL_ID,
+                upstream_model="local-simulate",
+                cost_per_second=0.0,
+                priority=95,
+                enabled=True,
+                remark=remark,
+            )
+        )
+        return
+    ch.kind = "image"
+    ch.provider = "mock"
+    ch.model_id = IMAGE_SIM_MODEL_ID
+    ch.upstream_model = "local-simulate"
+    ch.enabled = True
+    ch.remark = remark
 
 
 async def _heal_channels(db: AsyncSession) -> None:
@@ -246,17 +420,42 @@ async def _heal_channels(db: AsyncSession) -> None:
 
     result = await db.execute(select(Channel))
     for ch in result.scalars().all():
+        kind = (ch.kind or "").strip().lower()
+        if kind not in {"video", "llm", "tts", "image"}:
+            if ch.provider in {"openai", "anthropic"} and "tts" in (ch.model_id or "").lower():
+                ch.kind = "tts"
+            elif ch.provider in {"openai", "anthropic"}:
+                ch.kind = "llm"
+            else:
+                ch.kind = "video"
+        if ch.kind == "tts":
+            continue
         if not _looks_like_real_key(ch.api_key):
             ch.api_key = ""
 
     result = await db.execute(select(Channel).where(Channel.provider == "mock"))
     for local in result.scalars().all():
+        if (local.kind or "") == "image" or local.model_id == IMAGE_SIM_MODEL_ID:
+            local.kind = "image"
+            local.name = IMAGE_SIM_CHANNEL_NAME
+            local.model_id = IMAGE_SIM_MODEL_ID
+            local.upstream_model = "local-simulate"
+            local.enabled = True
+            continue
+        if (local.kind or "") == "llm" or local.model_id == LLM_SIM_MODEL_ID:
+            local.kind = "llm"
+            local.name = LLM_SIM_CHANNEL_NAME
+            local.model_id = LLM_SIM_MODEL_ID
+            local.upstream_model = "local-simulate"
+            local.enabled = True
+            continue
         if local.model_id in {"seedance-lite", "seedance-2.5", *_LEGACY_LOCAL_MODEL_IDS}:
             local.model_id = LOCAL_SIM_MODEL_ID
         local.name = LOCAL_SIM_CHANNEL_NAME
         local.upstream_model = "local-simulate"
         local.priority = LOCAL_SIM_PRIORITY if has_ark else LOCAL_SIM_PRIORITY_OFFLINE
         local.enabled = True
+        local.kind = "video"
 
     # Any leftover fal seedance → ark
     result = await db.execute(

@@ -5,8 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.deps import require_super_admin
 from app.models import Channel, User
-from app.schemas import ChannelCreate, ChannelOut, ChannelUpdate, ModelOptionOut
-from app.services import seedance
+from app.schemas import ChannelCreate, ChannelOut, ChannelProbeOut, ChannelUpdate, ModelOptionOut
+from app.services import channel_probe, seedance
 
 router = APIRouter(tags=["channels"])
 
@@ -39,6 +39,7 @@ def to_channel_out(ch: Channel) -> ChannelOut:
         id=ch.id,
         name=ch.name,
         provider=ch.provider,
+        kind=(ch.kind or "video"),
         base_url=ch.base_url,
         model_id=ch.model_id,
         upstream_model=ch.upstream_model,
@@ -51,7 +52,13 @@ def to_channel_out(ch: Channel) -> ChannelOut:
 
 
 @router.get("/models", response_model=list[ModelOptionOut])
-async def list_enabled_models(db: AsyncSession = Depends(get_db)) -> list[ModelOptionOut]:
+async def list_enabled_models(
+    db: AsyncSession = Depends(get_db),
+    kind: str = "video",
+) -> list[ModelOptionOut]:
+    want = (kind or "video").strip().lower()
+    if want not in {"video", "llm", "tts", "image"}:
+        want = "video"
     result = await db.execute(
         select(Channel)
         .where(Channel.enabled.is_(True))
@@ -61,15 +68,25 @@ async def list_enabled_models(db: AsyncSession = Depends(get_db)) -> list[ModelO
     seen: set[str] = set()
     out: list[ModelOptionOut] = []
     for ch in channels:
+        ch_kind = (ch.kind or "video").strip().lower() or "video"
+        if ch_kind != want:
+            continue
         if ch.model_id in seen:
             continue
         seen.add(ch.model_id)
         dmin, dmax, audio, image = _model_meta(ch)
+        if want == "llm":
+            dmin, dmax, audio, image = 0, 0, False, False
+        elif want == "tts":
+            dmin, dmax, audio, image = 0, 0, True, False
+        elif want == "image":
+            dmin, dmax, audio, image = 0, 0, False, True
         out.append(
             ModelOptionOut(
                 model_id=ch.model_id,
                 cost_per_second=ch.cost_per_second,
                 provider=ch.provider,
+                kind=want,
                 label=ch.name or ch.model_id,
                 duration_min=dmin,
                 duration_max=dmax,
@@ -116,7 +133,15 @@ async def admin_update_channel(
     ch = result.scalar_one_or_none()
     if ch is None:
         raise HTTPException(status_code=404, detail="渠道不存在")
-    for key, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    if "api_key" in data and not str(data.get("api_key") or "").strip():
+        data.pop("api_key")
+    new_name = data.get("name")
+    if isinstance(new_name, str) and new_name.strip() and new_name != ch.name:
+        exists = await db.execute(select(Channel).where(Channel.name == new_name, Channel.id != channel_id))
+        if exists.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="渠道名称已存在")
+    for key, value in data.items():
         setattr(ch, key, value)
     await db.commit()
     await db.refresh(ch)
@@ -136,3 +161,17 @@ async def admin_delete_channel(
     await db.delete(ch)
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/admin/channels/{channel_id}/probe", response_model=ChannelProbeOut)
+async def admin_probe_channel(
+    channel_id: int,
+    _: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> ChannelProbeOut:
+    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    ch = result.scalar_one_or_none()
+    if ch is None:
+        raise HTTPException(status_code=404, detail="渠道不存在")
+    out = await channel_probe.probe_channel(ch)
+    return ChannelProbeOut(**out.as_dict())

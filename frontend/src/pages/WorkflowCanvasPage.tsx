@@ -9,6 +9,7 @@ import {
   addEdge,
   useEdgesState,
   useNodesState,
+  useReactFlow,
   type Connection,
   type Edge,
   type Node,
@@ -20,6 +21,8 @@ import {
   isTerminalRun,
   STATUS_LABEL,
   subscribeWorkflowRun,
+  type AgentGraph,
+  type AgentViewport,
   type ModelOption,
   type Workflow,
   type WorkflowRun,
@@ -29,7 +32,8 @@ import { ensureUpstreamImageUrl } from "../imageUrl";
 import AdminSimulateDialog from "../workflow/AdminSimulateDialog";
 import { mediaNodeTypes } from "../workflow/canvas/MediaNode";
 import { fromApiGraph, toApiGraph } from "../workflow/graph";
-import { isValidPortConnection } from "../workflow/ports";
+import { dropClosedNarrationEdges, isValidPortConnection } from "../workflow/ports";
+import { inferConnectionHandles, syncWiredData } from "../workflow/sync";
 import {
   collectDownstreamExitIds,
   exitInputsReady,
@@ -37,16 +41,30 @@ import {
   markDownstreamStale,
 } from "../workflow/queue";
 import type { WfData, WfNodeType } from "../workflow/types";
-import { isExitNodeType, normalizeNodeType } from "../workflow/types";
+import { isExitNodeType, isGeneratableNodeType, isLlmNodeType, normalizeNodeType } from "../workflow/types";
 import { cannotRunReason } from "../workflow/runBlockers";
+import type { NodeContracts } from "../workflow/nodeContracts";
 import WfInspector from "../workflow/WfInspector";
 import ProjectAssetPanel from "../workflow/ProjectAssetPanel";
-import {
-  PALETTE,
-  WF_TEMPLATES,
-  defaultData,
-  type WfTemplateId,
-} from "../workflow/templates";
+import TvcAgentPanel from "../workflow/TvcAgentPanel";
+import { PALETTE, defaultData } from "../workflow/templates";
+
+function ViewportReporter({ onChange }: { onChange: (p: AgentViewport) => void }) {
+  const rf = useReactFlow();
+  useEffect(() => {
+    const tick = () => {
+      const el = document.querySelector(".cv-flow");
+      if (!(el instanceof HTMLElement)) return;
+      const r = el.getBoundingClientRect();
+      const p = rf.screenToFlowPosition({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+      onChange({ x: p.x, y: p.y });
+    };
+    tick();
+    const id = window.setInterval(tick, 800);
+    return () => window.clearInterval(id);
+  }, [rf, onChange]);
+  return null;
+}
 
 function applyMediaFromOutput(data: WfData, output?: Record<string, unknown> | null): WfData {
   if (!output) return data;
@@ -67,10 +85,20 @@ function applyMediaFromOutput(data: WfData, output?: Record<string, unknown> | n
   if (typeof output.image_url === "string") {
     next.image_url = output.image_url;
   }
-  if (typeof output.prompt === "string" && normalizeNodeType(data.nodeType) === "TextAsset") {
+  if (typeof output.prompt === "string" && (normalizeNodeType(data.nodeType) === "TextAsset" || isLlmNodeType(data.nodeType))) {
     next.prompt = output.prompt;
-    next.text = output.prompt;
+    next.text = typeof output.text === "string" ? output.text : output.prompt;
   }
+  if (typeof output.text === "string" && isLlmNodeType(data.nodeType)) {
+    next.text = output.text;
+    next.prompt = next.prompt || output.text;
+  }
+  if (data.wantNarration === false) {
+    next.narration = "";
+  } else if (typeof output.narration === "string") {
+    next.narration = output.narration;
+  }
+  if (typeof output.audio_url === "string") next.audio_url = output.audio_url;
   return next;
 }
 
@@ -81,19 +109,21 @@ export default function WorkflowCanvasPage() {
   const navigate = useNavigate();
   const routeId = Number(idParam);
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [llmModels, setLlmModels] = useState<ModelOption[]>([]);
+  const [ttsModels, setTtsModels] = useState<ModelOption[]>([]);
+  const [imageModels, setImageModels] = useState<ModelOption[]>([]);
+  const [contracts, setContracts] = useState<NodeContracts | null>(null);
   const [name, setName] = useState("未命名项目");
   const [workflowId, setWorkflowId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [run, setRun] = useState<WorkflowRun | null>(null);
   const [queueNote, setQueueNote] = useState("");
-  const [activeTemplate, setActiveTemplate] = useState<WfTemplateId>("beauty_linear");
   const [flowKey, setFlowKey] = useState(0);
   const [leftOpen, setLeftOpen] = useState(true);
-  const [leftTab, setLeftTab] = useState<"nodes" | "assets">("nodes");
+  const [leftTab, setLeftTab] = useState<"agent" | "nodes" | "assets">("agent");
   const [assetTick, setAssetTick] = useState(0);
-  const [rightOpen, setRightOpen] = useState(true);
-  const [fullscreen, setFullscreen] = useState<{ url: string; kind: "image" | "video" } | null>(
+  const [fullscreen, setFullscreen] = useState<{ url: string; kind: "image" | "video" | "audio" } | null>(
     null,
   );
   const [simulate, setSimulate] = useState<{
@@ -110,24 +140,46 @@ export default function WorkflowCanvasPage() {
   const lastSimulatedRunId = useRef<number | null>(null);
 
   const modelId = models[0]?.model_id || "";
+  const llmModelId = llmModels[0]?.model_id || "";
+  const ttsModelId = ttsModels[0]?.model_id || "tts-1";
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<WfData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [agentLocked, setAgentLocked] = useState(false);
+  const [viewport, setViewport] = useState<AgentViewport>({ x: 400, y: 280 });
+  const lastSavedRef = useRef("");
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  nodesRef.current = nodes;
+  edgesRef.current = edges;
+  const onViewport = useCallback((p: AgentViewport) => setViewport(p), []);
 
   useEffect(() => {
     if (!Number.isFinite(routeId) || routeId <= 0) {
       navigate("/", { replace: true });
       return;
     }
-    void Promise.all([api<ModelOption[]>("/api/models"), api<Workflow>(`/api/workflows/${routeId}`)])
-      .then(([m, wf]) => {
+    void Promise.all([
+      api<ModelOption[]>("/api/models?kind=video"),
+      api<ModelOption[]>("/api/models?kind=llm"),
+      api<ModelOption[]>("/api/models?kind=tts"),
+      api<ModelOption[]>("/api/models?kind=image"),
+      api<Workflow>(`/api/workflows/${routeId}`),
+      api<NodeContracts>("/api/agent/node-contracts"),
+    ])
+      .then(([m, llm, tts, imgs, wf, cons]) => {
         setModels(m);
+        setLlmModels(llm);
+        setTtsModels(tts);
+        setImageModels(imgs);
+        setContracts(cons);
         const mid = m[0]?.model_id || "";
         setWorkflowId(wf.id);
         setName(wf.name);
         const g = fromApiGraph(wf.graph, mid);
         setNodes(g.nodes);
         setEdges(g.edges);
+        lastSavedRef.current = JSON.stringify(toApiGraph(g.nodes, g.edges));
         setFlowKey((k) => k + 1);
         fingerprints.current = {};
         for (const n of g.nodes) {
@@ -157,7 +209,7 @@ export default function WorkflowCanvasPage() {
               nds.map((x) => (x.id === n.id ? { ...x, data: { ...x.data, label } } : x)),
             );
           },
-          onOpenFullscreen: (url: string, kind: "image" | "video") => setFullscreen({ url, kind }),
+          onOpenFullscreen: (url: string, kind: "image" | "video" | "audio") => setFullscreen({ url, kind }),
         },
       })),
     [nodes, setNodes],
@@ -165,45 +217,26 @@ export default function WorkflowCanvasPage() {
 
   const onConnect = useCallback(
     (c: Connection) => {
-      if (!isValidPortConnection(c)) return;
-      setEdges((eds) =>
-        addEdge(
-          {
-            ...c,
-            id: `e-${Date.now()}`,
-            sourceHandle: c.sourceHandle ?? undefined,
-            targetHandle: c.targetHandle ?? undefined,
-            animated: true,
-          },
-          eds,
-        ),
+      const wired = inferConnectionHandles(c, nodes, edges);
+      if (!isValidPortConnection(wired, nodes, edges)) return;
+      const nextEdges = addEdge(
+        {
+          ...wired,
+          id: `e-${Date.now()}`,
+          sourceHandle: wired.sourceHandle ?? undefined,
+          targetHandle: wired.targetHandle ?? undefined,
+          animated: true,
+        },
+        edges,
       );
-      if (c.target) {
-        setNodes((ns) => markDownstreamStale(c.source || "", ns, edges));
-      }
+      setEdges(nextEdges);
+      setNodes((ns) => {
+        const stale = wired.source ? markDownstreamStale(wired.source, ns, nextEdges) : ns;
+        return syncWiredData(stale, nextEdges);
+      });
     },
-    [setEdges, setNodes, edges],
+    [setEdges, setNodes, edges, nodes],
   );
-
-  function applyTemplate(id: WfTemplateId) {
-    const tpl = WF_TEMPLATES.find((t) => t.id === id);
-    if (!tpl) return;
-    const g = tpl.build(modelId);
-    setNodes(g.nodes);
-    setEdges(g.edges);
-    setActiveTemplate(id);
-    setSelectedId(null);
-    setRun(null);
-    fingerprints.current = {};
-    for (const n of g.nodes) {
-      if (isExitNodeType(n.data.nodeType)) {
-        fingerprints.current[n.id] = inputFingerprint(n.id, g.nodes, g.edges);
-      }
-    }
-    autoArmed.current = true;
-    // Remount flow so fitView re-frames the new layout
-    setFlowKey((k) => k + 1);
-  }
 
   function addNode(type: WfNodeType, extra?: Partial<WfData>) {
     const id = `n${Date.now()}-${idSeq.current++}`;
@@ -221,17 +254,22 @@ export default function WorkflowCanvasPage() {
 
   function updateSelected(patch: Partial<WfData>) {
     if (!selectedId) return;
+    const nextEdges =
+      patch.wantNarration === false
+        ? dropClosedNarrationEdges([{ id: selectedId, data: patch }], edges)
+        : edges;
+    if (nextEdges !== edges) setEdges(nextEdges);
     setNodes((ns) => {
       const next = ns.map((n) =>
         n.id === selectedId ? { ...n, data: { ...n.data, ...patch } } : n,
       );
-      return markDownstreamStale(selectedId, next, edges);
+      return syncWiredData(markDownstreamStale(selectedId, next, nextEdges), nextEdges);
     });
   }
 
   function applyRunStates(r: WorkflowRun) {
-    setNodes((ns) =>
-      ns.map((n) => {
+    setNodes((ns) => {
+      const applied = ns.map((n) => {
         const st = r.node_states?.[n.id];
         if (!st) return n;
         const withMedia = applyMediaFromOutput(
@@ -247,8 +285,9 @@ export default function WorkflowCanvasPage() {
           withMedia.preview_url = withMedia.preview_url || r.result_url;
         }
         return { ...n, data: withMedia };
-      }),
-    );
+      });
+      return syncWiredData(applied, edges);
+    });
 
     if (
       isAdmin &&
@@ -276,6 +315,8 @@ export default function WorkflowCanvasPage() {
     for (const n of graph.nodes) {
       const d = { ...(n.data as WfData) };
       if (normalizeNodeType(d.nodeType) === "ImageToVideo" && !d.model_id) d.model_id = modelId;
+      if (isLlmNodeType(d.nodeType) && !d.model_id) d.model_id = llmModelId;
+      if (normalizeNodeType(d.nodeType) === "TtsSpeak" && !d.model_id) d.model_id = ttsModelId;
       if (d.image_url) {
         d.image_url = (await ensureUpstreamImageUrl(d.image_url)) || undefined;
       }
@@ -299,7 +340,14 @@ export default function WorkflowCanvasPage() {
   }
 
   async function startRun(targetIds?: string[], note?: string) {
-    const blocked = cannotRunReason(nodes, { modelId, targetIds });
+    const blocked = cannotRunReason(nodes, edges, {
+      modelId,
+      llmReady: llmModels.length > 0,
+      ttsReady: ttsModels.length > 0,
+      imageReady: imageModels.length > 0,
+      targetIds,
+      contracts,
+    });
     if (blocked) {
       setError(blocked);
       setQueueNote("无法生成");
@@ -349,11 +397,13 @@ export default function WorkflowCanvasPage() {
     }
   }
 
-  async function saveDraft() {
-    setBusy(true);
-    setError("");
+  async function saveDraft(opts?: { silent?: boolean }) {
+    if (!opts?.silent) {
+      setBusy(true);
+      setError("");
+    }
     try {
-      const graph = toApiGraph(nodes, edges);
+      const graph = toApiGraph(nodesRef.current, edgesRef.current);
       if (!workflowId) throw new Error("项目尚未打开");
       const wf = await api<Workflow>(`/api/workflows/${workflowId}`, {
         method: "PATCH",
@@ -361,9 +411,30 @@ export default function WorkflowCanvasPage() {
       });
       setWorkflowId(wf.id);
       setName(wf.name);
+      lastSavedRef.current = JSON.stringify(graph);
       setAssetTick((n) => n + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
+      throw e;
+    } finally {
+      if (!opts?.silent) setBusy(false);
+    }
+  }
+
+  async function undoDraft() {
+    if (!workflowId || agentLocked) return;
+    setBusy(true);
+    setError("");
+    try {
+      const wf = await api<Workflow>(`/api/workflows/${workflowId}/undo`, { method: "POST" });
+      const mid = models[0]?.model_id || "";
+      const g = fromApiGraph(wf.graph, mid);
+      setNodes(g.nodes);
+      setEdges(g.edges);
+      lastSavedRef.current = JSON.stringify(toApiGraph(g.nodes, g.edges));
+      setAssetTick((n) => n + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "撤销失败");
     } finally {
       setBusy(false);
     }
@@ -413,7 +484,7 @@ export default function WorkflowCanvasPage() {
 
   // Auto-queue exit nodes when inputs change (Q12=C / Q17=A)
   useEffect(() => {
-    if (!autoArmed.current || runningRef.current || busy) return;
+    if (!autoArmed.current || runningRef.current || busy || agentLocked) return;
     if (Date.now() < suppressAutoUntil.current) return;
     const due: string[] = [];
     for (const n of nodes) {
@@ -433,7 +504,7 @@ export default function WorkflowCanvasPage() {
     }
     void startRun(due, `自动队列：${due.join(", ")}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, edges]);
+  }, [nodes, edges, agentLocked]);
 
   function applySimulate(url: string, continueDownstream: boolean) {
     if (!simulate) return;
@@ -479,18 +550,23 @@ export default function WorkflowCanvasPage() {
   }
 
   const runBlock = useMemo(
-    () => cannotRunReason(nodes, { modelId }),
-    [nodes, modelId],
+    () =>
+      cannotRunReason(nodes, edges, {
+        modelId,
+        llmReady: llmModels.length > 0,
+        ttsReady: ttsModels.length > 0,
+        imageReady: imageModels.length > 0,
+        contracts,
+      }),
+    [nodes, edges, modelId, llmModels.length, ttsModels.length, imageModels.length, contracts],
   );
 
   const selectedCanGenerate =
-    !!selected &&
-    (isExitNodeType(selected.data.nodeType) ||
-      normalizeNodeType(selected.data.nodeType) === "TextAsset");
+    !!selected && isGeneratableNodeType(selected.data.nodeType);
 
   return (
     <div className="canvas-app">
-    <div className={`cv-stage ${leftOpen ? "left-open" : "left-collapsed"} ${rightOpen ? "right-open" : "right-collapsed"}`}>
+    <div className={`cv-stage ${leftOpen ? "left-open" : "left-collapsed"} ${selected ? "right-open" : ""}`}>
       <section className="cv-canvas">
         <ReactFlow
           key={flowKey}
@@ -498,13 +574,14 @@ export default function WorkflowCanvasPage() {
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          isValidConnection={isValidPortConnection}
+          nodesDraggable={!agentLocked}
+          nodesConnectable={!agentLocked}
+          edgesReconnectable={!agentLocked}
+          elementsSelectable
+          onConnect={agentLocked ? undefined : onConnect}
+          isValidConnection={(c) => isValidPortConnection(c, nodes, edges, contracts)}
           nodeTypes={mediaNodeTypes}
-          onNodeClick={(_, n) => {
-            setSelectedId(n.id);
-            setRightOpen(true);
-          }}
+          onNodeClick={(_, n) => setSelectedId(n.id)}
           onPaneClick={() => setSelectedId(null)}
           fitView
           fitViewOptions={{ padding: 0.18, maxZoom: 1 }}
@@ -518,6 +595,7 @@ export default function WorkflowCanvasPage() {
           colorMode="light"
           className="cv-flow"
         >
+          <ViewportReporter onChange={onViewport} />
           <Background
             id="cv-grid"
             variant={BackgroundVariant.Dots}
@@ -525,11 +603,13 @@ export default function WorkflowCanvasPage() {
             size={1.1}
             color="rgba(212, 87, 138, 0.18)"
           />
-          <Controls showInteractive={false} position="bottom-left" />
+          <Controls showInteractive={false} position="bottom-right" />
           <MiniMap
             pannable
             zoomable
-            maskColor="rgba(250, 247, 248, 0.72)"
+            maskColor="rgba(36, 30, 34, 0.38)"
+            maskStrokeColor="#241e22"
+            maskStrokeWidth={2}
             nodeColor={() => "#d4578a"}
             style={{ background: "#fff9fb" }}
             position="bottom-right"
@@ -562,10 +642,13 @@ export default function WorkflowCanvasPage() {
           <button type="button" className="cv-chip-btn" disabled={busy} onClick={() => void saveDraft()}>
             保存
           </button>
+          <button type="button" className="cv-chip-btn" disabled={busy || agentLocked} onClick={() => void undoDraft()}>
+            撤销
+          </button>
           <button
             type="button"
             className="cv-chip-btn primary"
-            disabled={busy || !!runBlock || (!!run && isActiveRun(run.status))}
+            disabled={busy || (!!run && isActiveRun(run.status))}
             title={runBlock || undefined}
             onClick={() => void startRun(undefined, "一键跑")}
           >
@@ -596,7 +679,7 @@ export default function WorkflowCanvasPage() {
             <div className="cv-dock-head">
               <div>
                 <p className="eyebrow">项目</p>
-                <strong>{leftTab === "assets" ? "素材" : "节点"}</strong>
+                <strong>{leftTab === "agent" ? "TVC Agent" : leftTab === "assets" ? "素材" : "节点"}</strong>
               </div>
               <button
                 type="button"
@@ -609,6 +692,13 @@ export default function WorkflowCanvasPage() {
               </button>
             </div>
             <div className="cv-dock-tabs">
+              <button
+                type="button"
+                className={leftTab === "agent" ? "active" : ""}
+                onClick={() => setLeftTab("agent")}
+              >
+                TVC Agent
+              </button>
               <button
                 type="button"
                 className={leftTab === "nodes" ? "active" : ""}
@@ -624,37 +714,58 @@ export default function WorkflowCanvasPage() {
                 素材
               </button>
             </div>
+            {leftTab === "agent" ? (
+              <TvcAgentPanel
+                workflowId={workflowId}
+                models={llmModels}
+                selectedNodeId={selectedId}
+                viewport={viewport}
+                onGraph={(graph: AgentGraph) => {
+                  const mid = models[0]?.model_id || "";
+                  const g = fromApiGraph(graph, mid);
+                  setNodes(g.nodes);
+                  setEdges(g.edges);
+                  lastSavedRef.current = JSON.stringify(toApiGraph(g.nodes, g.edges));
+                  for (const n of g.nodes) {
+                    if (isExitNodeType(n.data.nodeType)) {
+                      fingerprints.current[n.id] = inputFingerprint(n.id, g.nodes, g.edges);
+                    }
+                  }
+                  setAssetTick((n) => n + 1);
+                }}
+                onLocked={setAgentLocked}
+                onBeforeSend={async () => {
+                  const cur = JSON.stringify(toApiGraph(nodesRef.current, edgesRef.current));
+                  if (cur !== lastSavedRef.current) {
+                    await saveDraft({ silent: true });
+                  }
+                }}
+              />
+            ) : (
             <div className="cv-dock-scroll">
               {leftTab === "nodes" ? (
-                <>
-              <div className="cv-section">
-                <p className="eyebrow">模板</p>
-                <div className="cv-templates">
-                  {WF_TEMPLATES.map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className={`cv-tpl ${activeTemplate === t.id ? "active" : ""}`}
-                      onClick={() => applyTemplate(t.id)}
-                    >
-                      <strong>{t.name}</strong>
-                      <span>{t.hint}</span>
-                    </button>
-                  ))}
+                <div className="cv-section">
+                  <div className="cv-palette">
+                    {PALETTE.map((p) => (
+                      <button
+                        key={p.type}
+                        type="button"
+                        className="cv-add"
+                        disabled={agentLocked}
+                        onClick={() => {
+                          const extra: Partial<WfData> = {};
+                          if (p.type === "LlmText") extra.model_id = llmModelId;
+                          if (p.type === "TextToImage") extra.model_id = imageModels[0]?.model_id;
+                          if (p.type === "TtsSpeak") extra.model_id = ttsModelId;
+                          addNode(p.type, extra);
+                        }}
+                      >
+                        <strong>{p.label}</strong>
+                        <span>{p.hint}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <div className="cv-section">
-                <p className="eyebrow">添加节点</p>
-                <div className="cv-palette">
-                  {PALETTE.map((p) => (
-                    <button key={p.type} type="button" className="cv-add" onClick={() => addNode(p.type)}>
-                      <strong>{p.label}</strong>
-                      <span>{p.hint}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-                </>
               ) : workflowId ? (
                 <ProjectAssetPanel
                   workflowId={workflowId}
@@ -662,6 +773,8 @@ export default function WorkflowCanvasPage() {
                   onPlace={(type, url, label) => {
                     if (type === "ImageAsset") {
                       addNode("ImageAsset", { image_url: url, label });
+                    } else if (type === "AudioAsset") {
+                      addNode("AudioAsset", { audio_url: url, label });
                     } else {
                       addNode("VideoAsset", {
                         clip_url: url,
@@ -687,6 +800,7 @@ export default function WorkflowCanvasPage() {
                 </div>
               )}
             </div>
+            )}
           </>
         ) : (
           <button
@@ -702,69 +816,61 @@ export default function WorkflowCanvasPage() {
         )}
       </aside>
 
-      {/* Right inspector: collapses to fixed strip */}
-      <div className={`cv-inspector ${rightOpen ? "is-open" : "is-collapsed"}`}>
-        {rightOpen ? (
-          <>
-            <div className="cv-dock-head">
-              <div>
-                <p className="eyebrow">属性</p>
-                <strong>{selected?.data.label || "未选中节点"}</strong>
-              </div>
-              <button
-                type="button"
-                className="cv-panel-toggle"
-                aria-label="收起属性面板"
-                title="收起"
-                onClick={() => setRightOpen(false)}
-              >
-                ›
-              </button>
+      {selected && (
+        <div className={`cv-inspector is-open${agentLocked ? " is-locked" : ""}`}>
+          <div className="cv-dock-head">
+            <div>
+              <p className="eyebrow">详细信息</p>
+              <strong>{selected.data.label}</strong>
             </div>
-            <div className="cv-dock-scroll">
-              <WfInspector
-                data={selected?.data ?? null}
-                models={models}
-                modelId={modelId}
-                onChange={updateSelected}
-                onGenerate={
-                  selectedCanGenerate
-                    ? () => {
-                        if (!selectedId) return;
-                        void startRun([selectedId], "生成选中节点");
-                      }
-                    : undefined
-                }
-                canGenerate={selectedCanGenerate && !busy && !(run && isActiveRun(run.status))}
-                onDelete={() => {
-                  setNodes((ns) => ns.filter((n) => n.id !== selectedId));
-                  setEdges((es: Edge[]) =>
-                    es.filter((e) => e.source !== selectedId && e.target !== selectedId),
-                  );
-                  setSelectedId(null);
-                }}
-              />
-            </div>
-          </>
-        ) : (
-          <button
-            type="button"
-            className="cv-rail-expand"
-            aria-label="展开属性面板"
-            title="展开属性"
-            onClick={() => setRightOpen(true)}
-          >
-            <span className="cv-rail-expand-text">属性</span>
-            <span className="cv-rail-expand-chevron">‹</span>
-          </button>
-        )}
-      </div>
+            <button
+              type="button"
+              className="cv-panel-toggle cv-panel-close"
+              aria-label="关闭详细信息"
+              title="关闭"
+              onClick={() => setSelectedId(null)}
+            >
+              关闭
+            </button>
+          </div>
+          <div className="cv-dock-scroll">
+            <WfInspector
+              data={selected.data}
+              models={models}
+              llmModels={llmModels}
+              ttsModels={ttsModels}
+              imageModels={imageModels}
+              modelId={modelId}
+              onChange={agentLocked ? () => undefined : updateSelected}
+              onGenerate={
+                selectedCanGenerate && !agentLocked
+                  ? () => {
+                      if (!selectedId) return;
+                      void startRun([selectedId], "生成选中节点");
+                    }
+                  : undefined
+              }
+              canGenerate={selectedCanGenerate && !busy && !agentLocked && !(run && isActiveRun(run.status))}
+              onDelete={() => {
+                if (agentLocked) return;
+                setNodes((ns) => ns.filter((n) => n.id !== selectedId));
+                setEdges((es: Edge[]) =>
+                  es.filter((e) => e.source !== selectedId && e.target !== selectedId),
+                );
+                setSelectedId(null);
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {fullscreen && (
         <div className="cv-modal-backdrop" onClick={() => setFullscreen(null)}>
           <div className="cv-fullscreen" onClick={(e) => e.stopPropagation()}>
             {fullscreen.kind === "video" ? (
               <video src={fullscreen.url} controls autoPlay />
+            ) : fullscreen.kind === "audio" ? (
+              <audio src={fullscreen.url} controls autoPlay />
             ) : (
               <img src={fullscreen.url} alt="" />
             )}

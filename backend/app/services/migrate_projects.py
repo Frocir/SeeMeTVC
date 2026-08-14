@@ -31,6 +31,10 @@ def apply_schema_updates(sync_conn) -> None:
         sync_conn.execute(text("ALTER TABLE workflows ADD COLUMN brand VARCHAR(120) DEFAULT 'SeeMe'"))
     if "cover_url" not in cols:
         sync_conn.execute(text("ALTER TABLE workflows ADD COLUMN cover_url TEXT"))
+    if "channels" in names:
+        ch_cols = {c["name"] for c in insp.get_columns("channels")}
+        if "kind" not in ch_cols:
+            sync_conn.execute(text("ALTER TABLE channels ADD COLUMN kind VARCHAR(16) DEFAULT 'video'"))
 
 
 async def migrate_project_space(db: AsyncSession) -> None:

@@ -3,7 +3,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-seeme}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-seeme}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-seemetvc}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -15,18 +15,31 @@ services:
       timeout: 5s
       retries: 10
 
+  aisrv:
+    image: travisvn/openai-edge-tts:latest
+    environment:
+      API_KEY: ${AISRV_API_KEY:?set AISRV_API_KEY in .env}
+      PORT: "5050"
+      DEFAULT_VOICE: zh-CN-XiaoxiaoNeural
+      DEFAULT_LANGUAGE: zh-CN
+      REQUIRE_API_KEY: "True"
+    ports:
+      - "${AISRV_PORT:-5050}:5050"
+
   api:
     build: ./backend
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-seeme}:${POSTGRES_PASSWORD:-seeme}@db:5432/${POSTGRES_DB:-seemetvc}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-seeme}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-seemetvc}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
-      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-admin123456}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?set BOOTSTRAP_ADMIN_PASSWORD in .env}
       UPLOAD_DIR: /app/data/uploads
       API_HOST: 0.0.0.0
       API_PORT: ${API_PORT:-8000}
       LOCAL_PROXY_HOST: ${LOCAL_PROXY_HOST:-127.0.0.1}
+      AISRV_API_KEY: ${AISRV_API_KEY:?set AISRV_API_KEY in .env}
+      AISRV_BASE_URL: http://aisrv:5050
     volumes:
       - uploads:/app/data/uploads
     ports:
@@ -34,6 +47,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      aisrv:
+        condition: service_started
 
   web:
     build: ./frontend

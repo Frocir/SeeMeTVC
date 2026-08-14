@@ -241,7 +241,7 @@ export default function WorkspacePage() {
                 onClick={() => setNewMode("blank")}
               >
                 <strong>＋ 空白项目</strong>
-                <small>单镜头快出（Brief + 图）</small>
+                <small>无声快出（Brief → LLM → 文生图 → 图生）</small>
               </button>
               <button
                 type="button"

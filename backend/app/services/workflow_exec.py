@@ -12,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal
 from app.models import Channel, User, Workflow, WorkflowRun, WorkflowRunStatus
-from app.services import media_ops, seedance
+from app.services import image_gen, media_ops, seedance
+from app.services import llm as llm_svc
+from app.services import tts as tts_svc
 from app.services.ledger import KIND_CHARGE, KIND_REFUND, record_entry
 from app.services.project_assets import (
     delete_ephemeral_run,
@@ -31,6 +33,10 @@ LEGACY_TO_FREE = {
     "ShotGenerate": "ImageToVideo",
     "TimelineMux": "VideoMux",
     "PreviewOut": "VideoAsset",
+    "LlmChat": "LlmText",
+    "LlmBrief": "LlmText",
+    "LlmStoryboard": "LlmText",
+    "LlmShot": "LlmText",
 }
 
 NODE_TYPES = frozenset(
@@ -38,12 +44,46 @@ NODE_TYPES = frozenset(
         "TextAsset",
         "ImageAsset",
         "VideoAsset",
+        "AudioAsset",
+        "LlmText",
+        "TextToImage",
         "ImageToVideo",
         "VideoTrim",
         "VideoMux",
+        "MixAudio",
+        "VideoDemux",
+        "AudioTrim",
+        "TtsSpeak",
+        "SubtitleBurn",
         *LEGACY_TO_FREE.keys(),
     }
 )
+
+LLM_TYPES = frozenset({"LlmText", "LlmChat", "LlmBrief", "LlmStoryboard", "LlmShot"})
+# Must succeed before downstream may consume their output. Assets are user-provided.
+PRODUCER_TYPES = frozenset(
+    {
+        *LLM_TYPES,
+        "TextToImage",
+        "ImageToVideo",
+        "ShotGenerate",
+        "VideoTrim",
+        "VideoMux",
+        "TimelineMux",
+        "TtsSpeak",
+        "AudioTrim",
+        "MixAudio",
+        "VideoDemux",
+        "SubtitleBurn",
+    }
+)
+LLM_ROLE = {
+    "LlmText": "shot",
+    "LlmChat": "chat",
+    "LlmBrief": "brief",
+    "LlmStoryboard": "shot",
+    "LlmShot": "shot",
+}
 
 
 def _normalize_type(ntype: str | None, data: dict) -> str:
@@ -93,6 +133,85 @@ def topological_order(nodes: list[dict], edges: list[dict]) -> list[str]:
     return order
 
 
+def _is_producer(ntype: str) -> bool:
+    return ntype in PRODUCER_TYPES
+
+
+def _has_usable_output(ntype: str, data: dict) -> bool:
+    if ntype in LLM_TYPES:
+        return bool(str(data.get("prompt") or data.get("text") or data.get("narration") or "").strip())
+    if ntype == "TextToImage":
+        return bool(str(data.get("image_url") or "").strip())
+    if ntype in {
+        "ImageToVideo",
+        "ShotGenerate",
+        "VideoTrim",
+        "VideoMux",
+        "TimelineMux",
+        "MixAudio",
+        "SubtitleBurn",
+    }:
+        return bool(
+            str(data.get("clip_url") or data.get("result_url") or data.get("preview_url") or "").strip()
+        )
+    if ntype in {"TtsSpeak", "AudioTrim"}:
+        return bool(str(data.get("audio_url") or "").strip())
+    if ntype == "VideoDemux":
+        video = str(data.get("clip_url") or data.get("result_url") or "").strip()
+        return bool(video and str(data.get("audio_url") or "").strip())
+    return True
+
+
+def _ancestor_ids(node_id: str, edges: list[dict], id_set: set[str]) -> list[str]:
+    incoming: dict[str, list[str]] = defaultdict(list)
+    for e in edges:
+        src, tgt = str(e.get("source")), str(e.get("target"))
+        if src in id_set and tgt in id_set:
+            incoming[tgt].append(src)
+    seen: set[str] = set()
+    order: list[str] = []
+
+    def walk(nid: str) -> None:
+        for src in incoming.get(nid, []):
+            if src in seen:
+                continue
+            seen.add(src)
+            walk(src)
+            order.append(src)
+
+    walk(node_id)
+    return order
+
+
+def _expand_failed_producers(
+    target_set: set[str],
+    by_id: dict[str, dict],
+    edges: list[dict],
+) -> set[str]:
+    extra: set[str] = set()
+    id_set = set(by_id)
+    for tid in target_set:
+        for anc in _ancestor_ids(tid, edges, id_set):
+            node = by_id.get(anc) or {}
+            data0 = dict(node.get("data") or {})
+            ntype0 = _normalize_type(node.get("type"), data0)
+            if not _is_producer(ntype0):
+                continue
+            if data0.get("runStatus") == "failed" or not _has_usable_output(ntype0, data0):
+                extra.add(anc)
+    return target_set | extra
+
+
+def _blocked_upstream(outputs: dict[str, dict], edges: list[dict], node_id: str) -> str | None:
+    for e in _incoming_edges(node_id, edges):
+        src = str(e.get("source"))
+        bag = outputs.get(src) or {}
+        if bag.get("__upstream_failed__"):
+            label = str(bag.get("__label__") or src)
+            return f"上游「{label}」失败或未出结果，已拦截后续节点"
+    return None
+
+
 def _node_map(nodes: list[dict]) -> dict[str, dict]:
     return {str(n["id"]): n for n in nodes if n.get("id") is not None}
 
@@ -109,6 +228,18 @@ BRIEF_KEYS = (
     "image_url",
     "reference_notes",
 )
+
+
+def _as_text(*vals: Any) -> str:
+    """Unwrap port dicts so prompt/text/narration survive merge."""
+    for val in vals:
+        if isinstance(val, dict):
+            s = str(val.get("narration") or val.get("prompt") or val.get("text") or "").strip()
+        else:
+            s = str(val or "").strip()
+        if s:
+            return s
+    return ""
 
 
 def _port_payload(src_out: dict[str, Any], port: str) -> Any:
@@ -153,6 +284,10 @@ def _port_payload(src_out: dict[str, Any], port: str) -> Any:
                 if k in src_out and src_out[k] is not None
             }
         return src_out.get("result_url") or src_out.get("clip_url") or (clips[-1] if clips else None)
+    if port in ("audio", "bgm", "vo"):
+        return src_out.get("audio_url") or src_out.get("result_url")
+    if port == "narration":
+        return src_out.get("narration") or ""
     return src_out.get(port)
 
 
@@ -231,6 +366,26 @@ def _apply_port(merged: dict[str, Any], target_port: str | None, value: Any) -> 
                         merged["clips"] = [*merged["clips"], *v]
                 else:
                     merged[k] = v
+            return
+
+    if port in ("audio", "bgm", "vo"):
+        url = value if isinstance(value, str) else (value.get("audio_url") if isinstance(value, dict) else None)
+        if isinstance(url, str) and url.strip():
+            if port == "bgm":
+                merged["bgm_url"] = url.strip()
+            elif port == "vo":
+                merged["vo_url"] = url.strip()
+            merged["audio_url"] = url.strip()
+        return
+
+    if port == "narration":
+        if isinstance(value, str):
+            merged["narration"] = value
+            if value.strip():
+                merged.setdefault("text", value)
+            return
+        if isinstance(value, dict) and value.get("narration"):
+            merged["narration"] = value["narration"]
         return
 
     merged[port] = value
@@ -314,9 +469,11 @@ def _tag_ports(ntype: str, out: dict[str, Any]) -> dict[str, Any]:
             for k in ("prompt", "scenes", "makeup_intensity", "image_url", *BRIEF_KEYS)
             if k in out and out[k] is not None
         }
+    elif free == "TextToImage":
+        ports["image"] = out.get("image_url")
     elif free == "ImageToVideo" or ntype == "ShotGenerate":
-        ports["clips"] = list(out.get("clips") or [])
-        ports["video"] = out.get("clip_url") or (ports["clips"][-1] if ports["clips"] else None)
+        ports["video"] = out.get("clip_url") or out.get("result_url")
+        ports["clips"] = list(out.get("clips") or ([ports["video"]] if ports["video"] else []))
     elif free in ("VideoMux", "VideoTrim") or ntype == "TimelineMux":
         url = out.get("result_url") or out.get("clip_url")
         ports["video"] = url
@@ -330,6 +487,34 @@ def _tag_ports(ntype: str, out: dict[str, Any]) -> dict[str, Any]:
         url = out.get("result_url") or out.get("clip_url")
         ports["video"] = url
         ports["result"] = url
+    elif free == "AudioAsset":
+        ports["audio"] = out.get("audio_url")
+    elif free == "TtsSpeak":
+        ports["audio"] = out.get("audio_url")
+    elif free == "AudioTrim":
+        ports["audio"] = out.get("audio_url")
+    elif free == "SubtitleBurn":
+        url = out.get("result_url") or out.get("clip_url")
+        ports["video"] = url
+    elif free == "MixAudio":
+        url = out.get("result_url") or out.get("clip_url")
+        ports["video"] = url
+        ports["clips"] = [url] if url else []
+    elif free == "VideoDemux":
+        ports["video"] = out.get("result_url") or out.get("clip_url")
+        ports["audio"] = out.get("audio_url")
+    elif free in LLM_TYPES:
+        ports["text"] = {
+            k: out[k]
+            for k in (*BRIEF_KEYS, "text", "scenes", "narration")
+            if k in out and out[k] is not None
+        }
+        if out.get("prompt"):
+            ports["prompt"] = out.get("prompt")
+        if out.get("scenes") is not None:
+            ports["scenes"] = out.get("scenes")
+        if out.get("narration"):
+            ports["narration"] = out.get("narration")
     return {**out, "outputs": ports}
 
 
@@ -384,56 +569,6 @@ def _exec_brief(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
     return brief
 
 
-def _exec_scene_plan(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
-    brief = _brief_from_ctx(ctx, data)
-    brand = brief.get("brand") or "品牌"
-    points = brief.get("selling_points") or "质感与气色"
-    slogan = brief.get("slogan") or ""
-    base = brief.get("prompt") or f"{brand}美妆广告"
-    style = str(data.get("style_hint") or "").strip()
-    templates = [
-        ("开场钩子", f"特写妆容开场，{base}，镜头推进，电影感光线"),
-        ("产品展示", f"产品瓶身与质地特写，{points}，柔焦背景，广告片质感"),
-        ("妆前对比", f"妆前素颜自然光，轻妆过渡前的状态，{brand}"),
-        ("妆后演绎", f"妆后气色提升，{points}，{slogan}，自信微笑"),
-        ("收束口号", f"品牌收束镜头，字幕「{slogan or brand}」，优雅转场"),
-    ]
-    count = int(data.get("scene_count") or 3)
-    count = max(1, min(count, len(templates)))
-    scenes = []
-    for i, t in enumerate(templates[:count]):
-        prompt = t[1]
-        if style:
-            prompt = f"{prompt}。{style}"
-        scenes.append({"index": i, "title": t[0], "prompt": prompt})
-    return {**brief, "scenes": scenes, "prompt": scenes[0]["prompt"]}
-
-
-def _exec_makeup(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
-    intensity = float(data.get("intensity") if data.get("intensity") is not None else 0.6)
-    intensity = max(0.0, min(1.0, intensity))
-    before = data.get("before_prompt") or ctx.get("before_prompt") or "素颜自然肤质，淡妆前状态"
-    after = data.get("after_prompt") or ctx.get("after_prompt") or "精致妆容，气色明亮"
-    blend = (
-        f"妆容强度 {int(intensity * 100)}%。"
-        f"妆前：{before}。"
-        f"妆后：{after}。"
-        f"过渡自然，广告级美妆特写。"
-    )
-    base = ctx.get("prompt") or ""
-    prompt = f"{base}。{blend}" if base else blend
-    out = {**ctx, "prompt": prompt, "makeup_intensity": intensity}
-    scenes = ctx.get("scenes")
-    if isinstance(scenes, list) and scenes:
-        enriched = []
-        for s in scenes:
-            sp = dict(s)
-            sp["prompt"] = f"{s.get('prompt', '')}。{blend}"
-            enriched.append(sp)
-        out["scenes"] = enriched
-    return out
-
-
 async def _run_shot(
     db: AsyncSession,
     user: User,
@@ -457,22 +592,12 @@ async def _run_shot(
         channel, int(data.get("duration_seconds") or ctx.get("duration_seconds") or 5)
     )
 
-    scenes = ctx.get("scenes") if isinstance(ctx.get("scenes"), list) else None
-    prompts: list[str]
-    if scenes and data.get("use_scenes", True):
-        prompts = [str(s.get("prompt") or "") for s in scenes if s.get("prompt")]
-    else:
-        prompts = [str(data.get("prompt") or ctx.get("prompt") or "")]
-
-    prompts = [p for p in prompts if p.strip()]
-    if not prompts:
+    prompt = _as_text(data.get("prompt"), ctx.get("prompt"), ctx.get("text"))
+    if not prompt:
         raise WorkflowExecError(
             "图生视频缺少有效提示词：请在节点填写「镜头提示词」，或把文本接到 prompt 槽"
         )
-
-    # Cap parallel shots in one node (Agnes RPM / cost); sequential for stability
-    max_shots = int(data.get("max_shots") or 1)
-    prompts = prompts[: max(1, min(max_shots, 5))]
+    prompts = [prompt]
 
     clips: list[str] = []
     node_cost = 0.0
@@ -618,16 +743,13 @@ async def _exec_trim(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str,
 
 
 def _exec_text_asset(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
-    role = str(data.get("textRole") or "brief")
-    if role == "script" or data.get("scene_count"):
-        return _exec_scene_plan(ctx, data)
     brief = _exec_brief(ctx, data)
     text = data.get("text") or brief.get("prompt") or ""
-    return {**brief, "text": text}
+    return {**brief, "text": text, "slogan": brief.get("slogan") or data.get("slogan") or ctx.get("slogan")}
 
 
 def _exec_image_asset(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
-    out = _exec_makeup(ctx, data) if data.get("before_prompt") or data.get("after_prompt") else {**ctx}
+    out = {**ctx}
     image = data.get("image_url") or ctx.get("image_url")
     if image:
         out["image_url"] = image
@@ -646,6 +768,224 @@ def _exec_video_asset(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
     if not url:
         raise WorkflowExecError("视频节点缺少地址")
     return {**ctx, "result_url": url, "clip_url": url, "clips": list(ctx.get("clips") or [url])}
+
+
+def _exec_audio_asset(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
+    url = data.get("audio_url") or ctx.get("audio_url") or ctx.get("bgm_url") or ctx.get("vo_url")
+    if not url:
+        raise WorkflowExecError("音频节点缺少文件，请上传 BGM 或口播")
+    return {**ctx, "audio_url": url}
+
+
+def _llm_user_payload(ctx: dict[str, Any], data: dict, role: str) -> str:
+    node_text = _as_text(data.get("prompt"), data.get("text"))
+    up_text = _as_text(ctx.get("text"), ctx.get("prompt"))
+    if role == "chat":
+        return "\n\n".join(p for p in (up_text, node_text) if p)
+    parts = []
+    brand = data.get("brand") or ctx.get("brand") or ""
+    points = data.get("selling_points") or ctx.get("selling_points") or ""
+    slogan = data.get("slogan") or ctx.get("slogan") or ""
+    if brand:
+        parts.append(f"品牌：{brand}")
+    if points:
+        parts.append(f"卖点：{points}")
+    if slogan:
+        parts.append(f"口号：{slogan}")
+    if up_text:
+        parts.append(up_text)
+    elif node_text:
+        parts.append(node_text)
+    return "\n".join(parts)
+
+
+async def _exec_llm(
+    db: AsyncSession,
+    ctx: dict[str, Any],
+    data: dict,
+    ntype: str,
+    on_hint,
+) -> dict[str, Any]:
+    role = str(data.get("llmRole") or LLM_ROLE.get(ntype) or "shot")
+    if role == "storyboard":
+        role = "shot"
+    want_raw = data.get("wantNarration")
+    want_narration = True if want_raw is None else bool(want_raw)
+    system = str(data.get("system_prompt") or "").strip() or llm_svc.default_system(
+        role, want_narration=want_narration
+    )
+    user = _llm_user_payload(ctx, data, role)
+    if not user.strip():
+        raise WorkflowExecError("LLM 缺少输入：请连接上游文本，或在节点填写正文")
+    model_id = str(data.get("model_id") or "").strip()
+    ch = await _pick_channel(db, model_id) if model_id else None
+    if ch is not None and (ch.kind or "").strip().lower() != "llm":
+        ch = None
+    if ch is None:
+        result = await db.execute(
+            select(Channel)
+            .where(Channel.enabled.is_(True), Channel.kind == "llm")
+            .order_by(Channel.priority.desc(), Channel.id.asc())
+            .limit(1)
+        )
+        ch = result.scalar_one_or_none()
+    if ch is None:
+        raise WorkflowExecError("没有已启用的 LLM 渠道。请超管启用「本地 LLM 模拟」，或填写真模型 Key。")
+    if llm_svc.is_simulate_channel(ch):
+        await on_hint("本地 LLM 模拟，即时返回…")
+    else:
+        await on_hint("正在调用真 LLM（约 20 秒未响应即失败）…")
+    try:
+        raw = await llm_svc.chat_complete(
+            ch, system=system, user=user, role=role, want_narration=want_narration
+        )
+    except llm_svc.LlmError as exc:
+        raise WorkflowExecError(str(exc)) from exc
+    out = {**ctx, "text": raw, "prompt": raw, "model_id": ch.model_id}
+    if role == "shot":
+        parsed = llm_svc.parse_shot(raw, want_narration=want_narration)
+        if not want_narration:
+            parsed["narration"] = ""
+        out.update(parsed)
+    return out
+
+
+async def _exec_tts(db: AsyncSession, ctx: dict[str, Any], data: dict, on_hint) -> dict[str, Any]:
+    text = _as_text(data.get("text"), ctx.get("narration"), ctx.get("text"), ctx.get("prompt"))
+    if not text:
+        raise WorkflowExecError("TTS 缺少口播文本：请连接 narration 或填写正文")
+    model_id = str(data.get("model_id") or "tts-1").strip()
+    ch = await _pick_channel(db, model_id)
+    if ch is None:
+        result = await db.execute(
+            select(Channel)
+            .where(Channel.enabled.is_(True), Channel.kind == "tts")
+            .order_by(Channel.priority.desc(), Channel.id.asc())
+            .limit(1)
+        )
+        ch = result.scalar_one_or_none()
+    if ch is None:
+        raise WorkflowExecError("没有已启用的 TTS 渠道（aisrv）")
+    voice = str(data.get("voice") or tts_svc.DEFAULT_VOICE).strip()
+    await on_hint("正在合成口播（本机 aisrv，约 25 秒未响应即失败）…")
+    try:
+        url = await tts_svc.synthesize(ch, text=text, voice=voice)
+    except tts_svc.TtsError as exc:
+        raise WorkflowExecError(str(exc)) from exc
+    return {**ctx, "audio_url": url, "narration": text, "voice": voice}
+
+
+async def _exec_mix(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str, Any]:
+    video = ctx.get("clip_url") or ctx.get("result_url") or (ctx.get("clips") or [None])[-1]
+    bgm = ctx.get("bgm_url") or data.get("bgm_url")
+    vo = ctx.get("vo_url") or data.get("vo_url")
+    if not video:
+        raise WorkflowExecError("混音缺少视频输入")
+    if not bgm:
+        raise WorkflowExecError("混音缺少 BGM 输入")
+    if not vo:
+        raise WorkflowExecError("混音缺少口播输入")
+    try:
+        url = await media_ops.mix_audio(user_id, str(video), str(bgm), str(vo))
+    except media_ops.MediaOpsError as exc:
+        raise WorkflowExecError(str(exc)) from exc
+    return {
+        **ctx,
+        "clip_url": url,
+        "result_url": url,
+        "clips": [url],
+        "bgm_url": bgm,
+        "vo_url": vo,
+    }
+
+
+async def _exec_t2i(db: AsyncSession, ctx: dict[str, Any], data: dict, on_hint) -> dict[str, Any]:
+    prompt = _as_text(data.get("prompt"), ctx.get("prompt"), ctx.get("text"))
+    if not prompt:
+        raise WorkflowExecError("文生图缺少提示词")
+    image_url = data.get("image_url") or ctx.get("image_url")
+    model_id = str(data.get("model_id") or "").strip()
+    ch = await _pick_channel(db, model_id) if model_id else None
+    if ch is None:
+        result = await db.execute(
+            select(Channel)
+            .where(Channel.enabled.is_(True), Channel.kind == "image")
+            .order_by(Channel.priority.desc(), Channel.id.asc())
+            .limit(1)
+        )
+        ch = result.scalar_one_or_none()
+    if ch is None:
+        raise WorkflowExecError("没有已启用的文生图渠道")
+    await on_hint("正在生成图片…")
+    try:
+        url = await image_gen.generate(ch, prompt=prompt, image_url=str(image_url) if image_url else None)
+    except image_gen.ImageGenError as exc:
+        raise WorkflowExecError(str(exc)) from exc
+    return {**ctx, "image_url": url, "prompt": prompt}
+
+
+async def _exec_audio_trim(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str, Any]:
+    url = (
+        data.get("audio_url")
+        or ctx.get("audio_url")
+        or ctx.get("vo_url")
+        or ctx.get("bgm_url")
+    )
+    if not url:
+        raise WorkflowExecError("音频裁切缺少输入")
+    start = float(data.get("trim_start") if data.get("trim_start") is not None else 0)
+    end = float(data.get("trim_end") if data.get("trim_end") is not None else 0)
+    try:
+        out_url = await media_ops.trim_audio(user_id, str(url), start, end)
+    except media_ops.MediaOpsError as exc:
+        raise WorkflowExecError(str(exc)) from exc
+    out = {**ctx, "audio_url": out_url}
+    if ctx.get("vo_url") or data.get("vo_url"):
+        out["vo_url"] = out_url
+    return out
+
+
+async def _exec_subtitle(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str, Any]:
+    video = ctx.get("clip_url") or ctx.get("result_url") or (ctx.get("clips") or [None])[-1]
+    if not video:
+        raise WorkflowExecError("字幕缺少输入视频")
+    text = str(
+        data.get("text")
+        or data.get("slogan")
+        or ctx.get("slogan")
+        or ctx.get("text")
+        or ctx.get("prompt")
+        or ""
+    ).strip()
+    if isinstance(ctx.get("text"), dict):
+        text = str(ctx["text"].get("slogan") or ctx["text"].get("text") or text).strip()
+    try:
+        url = await media_ops.burn_subtitle(user_id, str(video), text)
+    except media_ops.MediaOpsError as exc:
+        raise WorkflowExecError(str(exc)) from exc
+    return {**ctx, "clip_url": url, "result_url": url, "clips": [url], "slogan": text}
+
+
+async def _exec_demux(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str, Any]:
+    url = (
+        data.get("clip_url")
+        or ctx.get("clip_url")
+        or ctx.get("result_url")
+        or (ctx.get("clips") or [None])[-1]
+    )
+    if not url:
+        raise WorkflowExecError("拆轨缺少输入视频")
+    try:
+        silent, audio = await media_ops.demux_av(user_id, str(url))
+    except media_ops.MediaOpsError as exc:
+        raise WorkflowExecError(str(exc)) from exc
+    return {
+        **ctx,
+        "clip_url": silent,
+        "result_url": silent,
+        "clips": [silent],
+        "audio_url": audio,
+    }
 
 
 def _exec_preview(ctx: dict[str, Any], _data: dict) -> dict[str, Any]:
@@ -679,6 +1019,8 @@ async def execute_run(run_id: int) -> None:
             opts = graph_raw.get("__run_opts__") or {}
             target_ids = opts.get("target_ids")
             target_set = {str(x) for x in target_ids} if target_ids else None
+            if target_set is not None:
+                target_set = _expand_failed_producers(target_set, by_id, edges)
 
             # Seed outputs for skipped upstream from existing node data
             if target_set is not None:
@@ -686,11 +1028,21 @@ async def execute_run(run_id: int) -> None:
                     if nid in target_set:
                         continue
                     data0 = dict((by_id.get(nid) or {}).get("data") or {})
-                    syn = _synthetic_output_from_data(data0)
                     ntype0 = _normalize_type(
                         (by_id.get(nid) or {}).get("type"),
                         data0,
                     )
+                    label0 = str(data0.get("label") or ntype0 or nid)
+                    if _is_producer(ntype0) and (
+                        data0.get("runStatus") == "failed" or not _has_usable_output(ntype0, data0)
+                    ):
+                        outputs[nid] = {
+                            "__upstream_failed__": True,
+                            "__label__": label0,
+                            "__node_type__": ntype0,
+                        }
+                        continue
+                    syn = _synthetic_output_from_data(data0)
                     outputs[nid] = _tag_ports(ntype0 or "TextAsset", syn)
 
             for nid in order:
@@ -711,6 +1063,10 @@ async def execute_run(run_id: int) -> None:
                 run.node_states_json = json.dumps(node_states, ensure_ascii=False)
                 await db.commit()
 
+                blocked = _blocked_upstream(outputs, edges, nid)
+                if blocked:
+                    raise WorkflowExecError(blocked)
+
                 ctx = _merge_upstream(outputs, edges, nid)
                 out: dict[str, Any]
                 cost = 0.0
@@ -726,15 +1082,17 @@ async def execute_run(run_id: int) -> None:
                     await db.commit()
 
                 if ntype in ("TextAsset", "BriefInput", "ScenePlan"):
-                    if str(data.get("textRole") or "") == "script" or ntype == "ScenePlan":
-                        out = _exec_scene_plan(ctx, data)
-                    elif ntype == "BriefInput" or str(data.get("textRole") or "brief") == "brief":
-                        out = _exec_text_asset(ctx, data)
-                    else:
-                        out = _exec_text_asset(ctx, data)
+                    out = _exec_text_asset(ctx, data)
                 elif ntype in ("ImageAsset", "MakeupControl"):
                     out = _exec_image_asset(ctx, data)
+                elif ntype == "TextToImage":
+                    out = await _exec_t2i(db, ctx, data, _hint)
                 elif ntype in ("ImageToVideo", "ShotGenerate"):
+                    image_wired = any(
+                        str(e.get("targetHandle") or "") == "image" for e in _incoming_edges(nid, edges)
+                    )
+                    if image_wired and not (data.get("image_url") or ctx.get("image_url")):
+                        raise WorkflowExecError("图生视频已接图片，但上游没有可用图片")
                     out = await _run_shot(db, user, run, ctx, data, charged, on_hint=_hint)
                     cost = float(out.get("shot_cost") or 0)
                 elif ntype == "VideoTrim":
@@ -743,6 +1101,20 @@ async def execute_run(run_id: int) -> None:
                     out = await _exec_mux(user.id, ctx, data)
                 elif ntype in ("VideoAsset", "PreviewOut"):
                     out = _exec_video_asset(ctx, data)
+                elif ntype == "AudioAsset":
+                    out = _exec_audio_asset(ctx, data)
+                elif ntype in LLM_TYPES:
+                    out = await _exec_llm(db, ctx, data, ntype, _hint)
+                elif ntype == "TtsSpeak":
+                    out = await _exec_tts(db, ctx, data, _hint)
+                elif ntype == "AudioTrim":
+                    out = await _exec_audio_trim(user.id, ctx, data)
+                elif ntype == "MixAudio":
+                    out = await _exec_mix(user.id, ctx, data)
+                elif ntype == "VideoDemux":
+                    out = await _exec_demux(user.id, ctx, data)
+                elif ntype == "SubtitleBurn":
+                    out = await _exec_subtitle(user.id, ctx, data)
                 else:
                     raise WorkflowExecError(f"未实现节点：{ntype}")
 
@@ -764,6 +1136,8 @@ async def execute_run(run_id: int) -> None:
                             "clip_url",
                             "result_url",
                             "image_url",
+                            "audio_url",
+                            "narration",
                             "makeup_intensity",
                             "aspect",
                             "mux_note",
@@ -818,6 +1192,15 @@ async def execute_run(run_id: int) -> None:
                                 kind="image",
                             )
                             last_img = img.strip()
+                        au = o.get("audio_url")
+                        if isinstance(au, str) and au.strip():
+                            await upsert_asset(
+                                db,
+                                workflow_id=wf.id,
+                                user_id=wf.user_id,
+                                url=au.strip(),
+                                kind="audio",
+                            )
                     await sync_from_graph(db, wf)
                     if result_url and is_video_url(result_url):
                         wf.cover_url = result_url

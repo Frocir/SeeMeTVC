@@ -34,6 +34,9 @@ MAX_BYTES = 10 * 1024 * 1024
 VIDEO_EXT = {".mp4", ".webm", ".mov"}
 VIDEO_MIME = {"video/mp4", "video/webm", "video/quicktime"}
 MAX_VIDEO_BYTES = 80 * 1024 * 1024
+AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac"}
+AUDIO_MIME = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/aac", "audio/m4a"}
+MAX_AUDIO_BYTES = 20 * 1024 * 1024
 MIME_BY_EXT = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -75,22 +78,13 @@ def local_upload_path(image_url: str | None) -> Path | None:
         return None
     path = urlparse(image_url).path if "://" in image_url else image_url
     m = re.fullmatch(
-        r"/uploads/(\d+)/([a-f0-9]{32}\.(jpg|jpeg|png|webp|gif|mp4|webm|mov))",
+        r"/uploads/(\d+)/([a-f0-9]{32}(?:_(?:mux|trim|mix|demux|tts|bgm|vo))?\.(jpg|jpeg|png|webp|gif|mp4|webm|mov|mp3|wav|m4a|aac))",
         path,
         re.I,
     )
     if not m:
-        # mux/trim outputs use *_mux.mp4 / *_trim.mp4 names
-        m2 = re.fullmatch(
-            r"/uploads/(\d+)/([a-f0-9]{32}_(?:mux|trim)\.(mp4|webm|mov))",
-            path,
-            re.I,
-        )
-        if not m2:
-            return None
-        user_id, filename = m2.group(1), m2.group(2)
-    else:
-        user_id, filename = m.group(1), m.group(2)
+        return None
+    user_id, filename = m.group(1), m.group(2)
     candidate = uploads_root() / user_id / filename
     if candidate.is_file():
         return candidate
@@ -231,6 +225,42 @@ async def upload_video(
         raise HTTPException(status_code=400, detail="空文件")
     if len(raw) > MAX_VIDEO_BYTES:
         raise HTTPException(status_code=400, detail="视频不能超过 80MB")
+
+    user_dir = uploads_root() / str(user.id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{uuid.uuid4().hex}{ext}"
+    (user_dir / stored).write_bytes(raw)
+    return UploadOut(url=f"/uploads/{user.id}/{stored}", filename=file.filename or stored, size=len(raw))
+
+
+@router.post("/audio", response_model=UploadOut)
+async def upload_audio(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+) -> UploadOut:
+    name = (file.filename or "").lower()
+    ext = next((candidate for candidate in AUDIO_EXT if name.endswith(candidate)), "")
+    mime = (file.content_type or "").lower()
+    if not ext:
+        ext = {
+            "audio/mpeg": ".mp3",
+            "audio/mp3": ".mp3",
+            "audio/wav": ".wav",
+            "audio/x-wav": ".wav",
+            "audio/mp4": ".m4a",
+            "audio/aac": ".aac",
+            "audio/m4a": ".m4a",
+        }.get(mime, "")
+    if not ext:
+        raise HTTPException(status_code=400, detail="仅支持 mp3 / wav / m4a / aac")
+    if mime and mime not in AUDIO_MIME and ext not in AUDIO_EXT:
+        raise HTTPException(status_code=400, detail="文件类型不被允许")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="空文件")
+    if len(raw) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=400, detail="音频不能超过 20MB")
 
     user_dir = uploads_root() / str(user.id)
     user_dir.mkdir(parents=True, exist_ok=True)

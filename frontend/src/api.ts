@@ -57,6 +57,7 @@ export type ModelOption = {
   model_id: string;
   cost_per_second: number;
   provider: string;
+  kind?: string;
   label?: string;
   duration_min?: number;
   duration_max?: number;
@@ -106,6 +107,7 @@ export type Channel = {
   id: number;
   name: string;
   provider: string;
+  kind?: string;
   base_url: string;
   model_id: string;
   upstream_model: string;
@@ -114,6 +116,13 @@ export type Channel = {
   enabled: boolean;
   remark: string;
   api_key_masked: string;
+};
+
+export type ChannelProbe = {
+  ok: boolean;
+  message: string;
+  latency_ms: number;
+  detail?: string;
 };
 
 export type AdminUser = {
@@ -389,6 +398,26 @@ export type UploadImageResult = {
 };
 
 /** Multipart upload for reference images; returns a same-origin /uploads/... URL. */
+export async function uploadAudio(file: File): Promise<UploadImageResult> {
+  const body = new FormData();
+  body.append("file", file);
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(apiUrl("/api/uploads/audio"), { method: "POST", headers, body });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = data.detail || JSON.stringify(data);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(typeof detail === "string" ? detail : "上传失败");
+  }
+  return res.json();
+}
+
 export async function uploadImage(file: File): Promise<UploadImageResult> {
   const body = new FormData();
   body.append("file", file);
@@ -407,4 +436,122 @@ export async function uploadImage(file: File): Promise<UploadImageResult> {
     throw new Error(typeof detail === "string" ? detail : "上传失败");
   }
   return res.json();
+}
+
+export type AgentSkill = { id: string; name: string; description: string };
+export type AgentUiMsg = { id: number; role: "user" | "assistant"; content: string };
+export type AgentConfirm = {
+  node_id: string;
+  node_type: string;
+  label: string;
+  model_id: string;
+  estimated_cost: number;
+  unit?: string;
+};
+export type AgentSessionOut = {
+  workflow_id: number;
+  skill_id: string;
+  status: string;
+  model_id: string;
+  pending_confirm: AgentConfirm | null;
+  messages: AgentUiMsg[];
+};
+export type AgentGraph = { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> };
+export type AgentViewport = { x: number; y: number };
+
+export type AgentStreamHandlers = {
+  onToken?: (text: string) => void;
+  onTool?: (ev: { name: string; status: string; detail: string }) => void;
+  onGraph?: (graph: AgentGraph) => void;
+  onConfirm?: (c: AgentConfirm) => void;
+  onError?: (detail: string) => void;
+  onDone?: (status: string) => void;
+};
+
+async function readAgentSse(path: string, body: unknown, handlers: AgentStreamHandlers, signal?: AbortSignal) {
+  const token = getToken();
+  const res = await fetch(apiUrl(path), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = data.detail || JSON.stringify(data);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(typeof detail === "string" ? detail : "Agent 请求失败");
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const chunks = buf.split("\n\n");
+    buf = chunks.pop() || "";
+    for (const chunk of chunks) {
+      const lines = chunk.split("\n");
+      let event = "message";
+      const dataLines: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+      }
+      if (!dataLines.length) continue;
+      let data: Record<string, unknown> = {};
+      try {
+        data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (event === "token") handlers.onToken?.(String(data.text || ""));
+      else if (event === "tool") {
+        handlers.onTool?.({
+          name: String(data.name || ""),
+          status: String(data.status || ""),
+          detail: String(data.detail || ""),
+        });
+      } else if (event === "graph") handlers.onGraph?.(data as AgentGraph);
+      else if (event === "confirm_required") handlers.onConfirm?.(data as AgentConfirm);
+      else if (event === "error") handlers.onError?.(String(data.detail || "Agent 出错"));
+      else if (event === "done") handlers.onDone?.(String(data.status || "idle"));
+    }
+  }
+}
+
+export function streamAgentChat(
+  body: {
+    workflow_id: number;
+    model_id?: string;
+    skill_id?: string;
+    text: string;
+    selected_node_id?: string;
+    viewport?: AgentViewport;
+  },
+  handlers: AgentStreamHandlers,
+  signal?: AbortSignal,
+) {
+  return readAgentSse("/api/agent/chat", body, handlers, signal);
+}
+
+export function streamAgentResume(
+  body: {
+    workflow_id: number;
+    accept: boolean;
+    selected_node_id?: string;
+    viewport?: AgentViewport;
+  },
+  handlers: AgentStreamHandlers,
+  signal?: AbortSignal,
+) {
+  return readAgentSse("/api/agent/resume", body, handlers, signal);
 }

@@ -1,12 +1,24 @@
-/** Freeform LibTV-style canvas kinds (V1). Legacy 6 types still accepted via normalize. */
+/** Canvas node types. Legacy names still normalize on load; old graphs are not guaranteed to run. */
 export type WfNodeType =
   | "TextAsset"
   | "ImageAsset"
   | "VideoAsset"
+  | "AudioAsset"
+  | "LlmText"
+  | "TextToImage"
   | "ImageToVideo"
   | "VideoTrim"
   | "VideoMux"
-  // Legacy aliases (loaded graphs / old drafts)
+  | "MixAudio"
+  | "VideoDemux"
+  | "AudioTrim"
+  | "TtsSpeak"
+  | "SubtitleBurn"
+  // Legacy aliases (loaded graphs)
+  | "LlmChat"
+  | "LlmBrief"
+  | "LlmStoryboard"
+  | "LlmShot"
   | "BriefInput"
   | "ScenePlan"
   | "MakeupControl"
@@ -14,31 +26,31 @@ export type WfNodeType =
   | "TimelineMux"
   | "PreviewOut";
 
-export type MediaKind = "text" | "image" | "video" | "clips";
+export type MediaKind = "text" | "image" | "video" | "audio";
+
+export type LlmRole = "chat" | "brief" | "shot";
 
 export type WfData = {
   nodeType: WfNodeType;
   label: string;
-  /** Optional role for TextAsset in beauty templates */
-  textRole?: "brief" | "script" | "prompt" | "notes";
+  textRole?: "brief" | "prompt" | "notes";
+  llmRole?: LlmRole;
+  /** Shot role only. Default true. False = no 旁白 port / field. */
+  wantNarration?: boolean;
   brand?: string;
   selling_points?: string;
   slogan?: string;
   prompt?: string;
   text?: string;
+  system_prompt?: string;
+  narration?: string;
   image_url?: string;
-  scene_count?: number;
+  audio_url?: string;
   style_hint?: string;
   model_id?: string;
+  voice?: string;
   duration_seconds?: number;
-  use_scenes?: boolean;
-  max_shots?: number;
-  intensity?: number;
-  before_prompt?: string;
-  after_prompt?: string;
   aspect?: string;
-  pick?: string;
-  /** Trim window in seconds */
   trim_start?: number;
   trim_end?: number;
   preview_url?: string;
@@ -54,7 +66,6 @@ export type WfData = {
 export type PortDef = {
   id: string;
   label: string;
-  /** Data kind for slot matching */
   kind: MediaKind;
 };
 
@@ -64,7 +75,33 @@ export type PaletteItem = {
   hint: string;
 };
 
-export const EXIT_NODE_TYPES: WfNodeType[] = ["ImageToVideo", "VideoTrim", "VideoMux", "ShotGenerate", "TimelineMux"];
+export const EXIT_NODE_TYPES: WfNodeType[] = [
+  "TextToImage",
+  "ImageToVideo",
+  "VideoTrim",
+  "VideoMux",
+  "MixAudio",
+  "VideoDemux",
+  "AudioTrim",
+  "SubtitleBurn",
+  "ShotGenerate",
+  "TimelineMux",
+];
+
+export const LLM_NODE_TYPES: WfNodeType[] = [
+  "LlmText",
+  "LlmChat",
+  "LlmBrief",
+  "LlmStoryboard",
+  "LlmShot",
+];
+
+export const GENERATABLE_NODE_TYPES: WfNodeType[] = [
+  ...EXIT_NODE_TYPES,
+  ...LLM_NODE_TYPES,
+  "TtsSpeak",
+  "TextAsset",
+];
 
 export const LEGACY_TO_FREE: Record<string, WfNodeType> = {
   BriefInput: "TextAsset",
@@ -73,7 +110,22 @@ export const LEGACY_TO_FREE: Record<string, WfNodeType> = {
   ShotGenerate: "ImageToVideo",
   TimelineMux: "VideoMux",
   PreviewOut: "VideoAsset",
+  LlmChat: "LlmText",
+  LlmBrief: "LlmText",
+  LlmStoryboard: "LlmText",
+  LlmShot: "LlmText",
 };
+
+const LLM_ROLE_FROM_LEGACY: Record<string, LlmRole> = {
+  LlmChat: "chat",
+  LlmBrief: "brief",
+  LlmStoryboard: "shot",
+  LlmShot: "shot",
+};
+
+export function legacyLlmRole(declared: string): LlmRole | undefined {
+  return LLM_ROLE_FROM_LEGACY[declared];
+}
 
 export function normalizeNodeType(raw: string | undefined | null): WfNodeType {
   const t = (raw || "TextAsset") as WfNodeType;
@@ -82,4 +134,14 @@ export function normalizeNodeType(raw: string | undefined | null): WfNodeType {
 
 export function isExitNodeType(t: WfNodeType): boolean {
   return EXIT_NODE_TYPES.includes(t) || EXIT_NODE_TYPES.includes(normalizeNodeType(t));
+}
+
+export function isLlmNodeType(t: WfNodeType): boolean {
+  const n = normalizeNodeType(t);
+  return n === "LlmText" || LLM_NODE_TYPES.includes(n) || LLM_NODE_TYPES.includes(t);
+}
+
+export function isGeneratableNodeType(t: WfNodeType): boolean {
+  const n = normalizeNodeType(t);
+  return GENERATABLE_NODE_TYPES.includes(n) || GENERATABLE_NODE_TYPES.includes(t);
 }

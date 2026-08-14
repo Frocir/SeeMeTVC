@@ -54,10 +54,11 @@ class Channel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
-    provider: Mapped[str] = mapped_column(String(64), default="ark")  # ark | mock | agnes | pavo
+    provider: Mapped[str] = mapped_column(String(64), default="ark")  # ark | mock | agnes | openai | anthropic
+    kind: Mapped[str] = mapped_column(String(16), default="video", index=True)  # video | llm | tts | image
     base_url: Mapped[str] = mapped_column(String(512), default="")
     api_key: Mapped[str] = mapped_column(Text, default="")
-    # Model id exposed to users, e.g. seedance-lite / seedance-2.5
+    # Model id exposed to users, e.g. seedance-lite / gpt-4o / tts-1
     model_id: Mapped[str] = mapped_column(String(120), index=True)
     # Ark model id or endpoint ep-xxx
     upstream_model: Mapped[str] = mapped_column(String(255))
@@ -165,7 +166,7 @@ class ProjectAsset(Base):
         ForeignKey("workflows.id", ondelete="CASCADE"), index=True
     )
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    kind: Mapped[str] = mapped_column(String(16), index=True)  # image | video | output
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # image | video | audio | output
     url: Mapped[str] = mapped_column(Text)
     filename: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -189,3 +190,55 @@ class BalanceEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="ledger_entries")
+
+
+class AgentSession(Base):
+    """One Agent thread per project."""
+
+    __tablename__ = "agent_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    skill_id: Mapped[str] = mapped_column(String(64), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="idle", index=True)
+    pending_json: Mapped[str] = mapped_column(Text, default="")
+    model_id: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    messages: Mapped[list["AgentMessage"]] = relationship(back_populates="session")
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16), index=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    meta_json: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    session: Mapped["AgentSession"] = relationship(back_populates="messages")
+
+
+class GraphRevision(Base):
+    """Undo snapshots for a project graph."""
+
+    __tablename__ = "graph_revisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    graph_json: Mapped[str] = mapped_column(Text, default="{}")
+    source: Mapped[str] = mapped_column(String(32), default="user_save")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -37,6 +37,7 @@ class MeOut(UserOut):
 class ChannelCreate(BaseModel):
     name: str
     provider: str = "ark"
+    kind: str = "video"
     base_url: str = ""
     api_key: str = ""
     model_id: str
@@ -50,6 +51,7 @@ class ChannelCreate(BaseModel):
 class ChannelUpdate(BaseModel):
     name: str | None = None
     provider: str | None = None
+    kind: str | None = None
     base_url: str | None = None
     api_key: str | None = None
     model_id: str | None = None
@@ -64,6 +66,7 @@ class ChannelOut(BaseModel):
     id: int
     name: str
     provider: str
+    kind: str = "video"
     base_url: str
     model_id: str
     upstream_model: str
@@ -77,10 +80,18 @@ class ChannelOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ChannelProbeOut(BaseModel):
+    ok: bool
+    message: str
+    latency_ms: int
+    detail: str = ""
+
+
 class ModelOptionOut(BaseModel):
     model_id: str
     cost_per_second: float
     provider: str
+    kind: str = "video"
     label: str = ""
     duration_min: int = 2
     duration_max: int = 30
@@ -226,3 +237,24 @@ class WorkflowRunOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AgentViewportIn(BaseModel):
+    x: float = 400
+    y: float = 280
+
+
+class AgentChatIn(BaseModel):
+    workflow_id: int
+    model_id: str = ""
+    skill_id: str = ""
+    text: str = Field(min_length=1, max_length=8000)
+    selected_node_id: str = ""
+    viewport: AgentViewportIn | None = None
+
+
+class AgentResumeIn(BaseModel):
+    workflow_id: int
+    accept: bool = True
+    selected_node_id: str = ""
+    viewport: AgentViewportIn | None = None
