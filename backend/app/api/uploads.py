@@ -78,7 +78,7 @@ def local_upload_path(image_url: str | None) -> Path | None:
         return None
     path = urlparse(image_url).path if "://" in image_url else image_url
     m = re.fullmatch(
-        r"/uploads/(\d+)/([a-z0-9_/-]*[a-f0-9]{32}(?:_(?:mux|trim|mix|demux|tts|bgm|vo|t2i|frame\d+))?\.(jpg|jpeg|png|webp|gif|mp4|webm|mov|mp3|wav|m4a|aac)|video_reverse/[a-f0-9]{32}/scene_\d{3}\.(jpg|jpeg|png|webp))",
+        r"/uploads/(\d+)/([a-z0-9_/-]*[a-f0-9]{32}(?:_(?:mux|trim|mix|demux|tts|bgm|vo|t2i|asr|frame\d+))?\.(jpg|jpeg|png|webp|gif|mp4|webm|mov|mp3|wav|m4a|aac)|video_reverse/[a-f0-9]{32}/scene_\d{3}\.(jpg|jpeg|png|webp))",
         path,
         re.I,
     )

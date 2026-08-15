@@ -60,7 +60,9 @@ def expand_scenes_to_nodes(
     if not isinstance(raw_scenes, list) or not raw_scenes:
         raise ValueError("视频反推节点没有可展开的 scenes，请先运行反推节点")
 
-    scenes = [s for s in raw_scenes if isinstance(s, dict)][:8]
+    valid_scenes = [s for s in raw_scenes if isinstance(s, dict)]
+    source_scene_count = len(valid_scenes)
+    scenes = valid_scenes[:8]
     if not scenes:
         raise ValueError("视频反推 scenes 格式无效")
 
@@ -213,11 +215,17 @@ def expand_scenes_to_nodes(
         created_edges.append(_edge(graph, final_node_id, sub_id, "video", "video"))
         final_node_id = sub_id
 
+    warning = ""
+    if source_scene_count > 4:
+        warning = f"分镜共 {source_scene_count} 条（已展开前 {len(scenes)} 条）。超过 4 条时应先询问用户是否压缩。"
     return {
         "graph": graph,
         "source_node_id": source_node_id,
         "mode": mode,
+        "scene_count": len(scenes),
+        "source_scene_count": source_scene_count,
         "created_node_ids": created_nodes,
         "created_edge_ids": created_edges,
         "final_node_id": final_node_id,
+        "warning": warning or None,
     }

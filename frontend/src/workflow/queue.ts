@@ -4,6 +4,8 @@ import { isExitNodeType, isLlmNodeType, normalizeNodeType, type WfData } from ".
 const PRODUCER_TYPES = new Set([
   "LlmText",
   "TextToImage",
+  "ImageCompare",
+  "SpeechToText",
   "ImageToVideo",
   "VideoTrim",
   "VideoMux",
@@ -60,6 +62,7 @@ export function inputFingerprint(nodeId: string, nodes: Node<WfData>[], edges: E
       d?.result_url || "",
       d?.preview_url || "",
       d?.audio_url || "",
+      d?.media_url || "",
       d?.narration || "",
       JSON.stringify(d?.runOutput?.clips || null),
     ].join("|");
@@ -72,6 +75,13 @@ export function inputFingerprint(nodeId: string, nodes: Node<WfData>[], edges: E
       self?.trim_start ?? "",
       self?.trim_end ?? "",
       self?.aspect || "",
+      self?.size || "",
+      self?.seed ?? "",
+      self?.first_image_url || "",
+      self?.last_image_url || "",
+      self?.style_image_url || "",
+      self?.character_image_url || "",
+      self?.product_image_url || "",
     ].join("|"),
   );
   return parts.join("::");
@@ -97,6 +107,12 @@ export function exitInputsReady(nodeId: string, nodes: Node<WfData>[], edges: Ed
       Boolean(node.data.prompt) ||
       Boolean(node.data.text)
     );
+  }
+  if (nt === "ImageCompare") {
+    return Boolean(node.data.before_url || node.data.after_url || incoming.length > 0);
+  }
+  if (nt === "SpeechToText") {
+    return Boolean(node.data.media_url || node.data.audio_url || node.data.clip_url || incoming.length > 0);
   }
   if (nt === "AudioTrim" || nt === "SubtitleBurn") {
     return incoming.length > 0;

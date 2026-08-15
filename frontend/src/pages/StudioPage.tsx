@@ -168,8 +168,7 @@ export default function StudioPage() {
             <div className="empty-hint" role="status">
               <strong>暂无可用模型</strong>
               <p className="muted">
-                请超管在「超管」页对 Seedance Lite / 2.5 填写<strong>火山方舟 ARK_API_KEY</strong>并启用；离线演示可用{" "}
-                <code>本地seedance模拟版</code>。
+                请超管在「超管」页对 Seedance Lite / 2.5 填写<strong>火山方舟 ARK_API_KEY</strong>并启用。
               </p>
               {me?.role === "super_admin" && (
                 <Link className="linkish" to="/admin">
@@ -199,7 +198,6 @@ export default function StudioPage() {
                   {m.label || m.model_id}
                   {m.supports_audio ? " · 有声" : ""}
                   {m.provider === "agnes" || m.provider === "pavo" ? " · 免费 Pavo" : ""}
-                  {m.provider === "mock" ? " · 本地模拟" : ""}
                   {" · "}
                   {m.cost_per_second}/{me?.balance_unit || "积分"}/秒
                 </option>
@@ -243,9 +241,7 @@ export default function StudioPage() {
                 ? "（方舟 2.x 最短约 4 秒；填更短会按下限生成并计费）"
                 : selected.model_id === "seedance-lite"
                   ? "（方舟 Lite 约 2–12 秒；超出自动夹紧）"
-                  : selected.provider === "mock"
-                    ? "（本地模拟版）"
-                    : "（超出自动夹紧）"}
+                  : "（超出自动夹紧）"}
               {selected.supports_audio ? " · 有声" : " · 无原生音频"}
               {selected.model_id === "seedance-lite" || selected.model_id === "seedance-2.5"
                 ? " · 有参考图走图生，否则文生"

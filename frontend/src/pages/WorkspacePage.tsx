@@ -119,7 +119,7 @@ export default function WorkspacePage() {
         <div>
           <p className="eyebrow">工作区</p>
           <h1>我的项目</h1>
-          <p className="lead">每个项目一张编辑画布。封面优先用成片，还没有成片时用最后一张图片。</p>
+          <p className="lead">每个项目一张画布。封面优先用成片，还没有成片时用最后一张图。</p>
         </div>
         <button className="primary" type="button" onClick={() => setModal(true)}>
           ＋ 新建项目
@@ -150,7 +150,7 @@ export default function WorkspacePage() {
         <button className="new-card" type="button" onClick={() => setModal(true)}>
           <span className="new-mark">＋</span>
           <strong>新建项目</strong>
-          <span>空白项目或官方模板</span>
+          <span>空白项目或选一套现成流程</span>
         </button>
         {list.map((wf) => {
           const brand = wf.brand || graphBrand(wf.graph);
@@ -226,7 +226,7 @@ export default function WorkspacePage() {
               <input
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                placeholder="例如：秋季底妆新品 TVC"
+                placeholder="例如：秋季底妆短片"
               />
             </label>
             <label>
@@ -241,7 +241,7 @@ export default function WorkspacePage() {
                 onClick={() => setNewMode("blank")}
               >
                 <strong>＋ 空白项目</strong>
-                <small>无声快出（Brief → LLM → 文生图 → 图生）</small>
+                <small>文案、写镜头、出图、出视频</small>
               </button>
               <button
                 type="button"
@@ -249,18 +249,27 @@ export default function WorkspacePage() {
                 onClick={() => setNewMode("template")}
               >
                 <strong>▣ 官方模板</strong>
-                <small>预填官方美妆节点</small>
+                <small>美学成片，或硬件 / 科创工坊</small>
               </button>
             </div>
             {newMode === "template" && (
               <label>
                 模板
                 <select value={newTpl} onChange={(e) => setNewTpl(e.target.value as WfTemplateId)}>
-                  {WF_TEMPLATES.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
+                  <optgroup label="美学">
+                    {WF_TEMPLATES.filter((t) => t.kind === "beauty").map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="硬件 / 科创">
+                    {WF_TEMPLATES.filter((t) => t.kind === "hardware").map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </label>
             )}

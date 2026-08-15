@@ -35,6 +35,30 @@ def apply_schema_updates(sync_conn) -> None:
         ch_cols = {c["name"] for c in insp.get_columns("channels")}
         if "kind" not in ch_cols:
             sync_conn.execute(text("ALTER TABLE channels ADD COLUMN kind VARCHAR(16) DEFAULT 'video'"))
+        if "config_json" not in ch_cols:
+            sync_conn.execute(text("ALTER TABLE channels ADD COLUMN config_json TEXT DEFAULT '{}'"))
+    if "agent_sessions" in names:
+        ag_cols = {c["name"] for c in insp.get_columns("agent_sessions")}
+        if "work_mode" not in ag_cols:
+            sync_conn.execute(
+                text("ALTER TABLE agent_sessions ADD COLUMN work_mode VARCHAR(16) DEFAULT 'plan'")
+            )
+        flagged = sync_conn.execute(
+            text("SELECT value FROM schema_flags WHERE name = 'agent_work_mode_v2'")
+        ).first()
+        if not flagged:
+            sync_conn.execute(
+                text(
+                    "UPDATE agent_sessions SET work_mode = 'plan' "
+                    "WHERE work_mode IN ('auto', 'click', '') OR work_mode IS NULL"
+                )
+            )
+            sync_conn.execute(
+                text("UPDATE agent_sessions SET work_mode = 'auto' WHERE work_mode = 'goal'")
+            )
+            sync_conn.execute(
+                text("INSERT INTO schema_flags (name, value) VALUES ('agent_work_mode_v2', '1')")
+            )
 
 
 async def migrate_project_space(db: AsyncSession) -> None:

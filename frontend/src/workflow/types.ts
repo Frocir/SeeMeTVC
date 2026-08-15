@@ -12,6 +12,8 @@ export type WfNodeType =
   | "MixAudio"
   | "VideoDemux"
   | "VideoReversePrompt"
+  | "ImageCompare"
+  | "SpeechToText"
   | "AudioTrim"
   | "TtsSpeak"
   | "SubtitleBurn"
@@ -56,6 +58,12 @@ export type TimelineItem = {
   score?: number;
 };
 
+export type TranscriptSegment = {
+  start: number;
+  end: number;
+  text: string;
+};
+
 export type WfData = {
   nodeType: WfNodeType;
   label: string;
@@ -86,7 +94,6 @@ export type WfData = {
   runError?: string;
   runOutput?: Record<string, unknown> | null;
   stale?: boolean;
-  simulated?: boolean;
   frame_count?: number;
   frame_strategy?: "fixed" | "scene_detect";
   max_scenes?: number;
@@ -97,6 +104,27 @@ export type WfData = {
   timeline?: TimelineItem[];
   scenes?: Scene[];
   reference_video_url?: string;
+  before_url?: string;
+  after_url?: string;
+  selected?: "before" | "after";
+  compare_mode?: "slider" | "side_by_side";
+  url?: string;
+  media_url?: string;
+  language?: string;
+  segments?: TranscriptSegment[];
+  srt?: string;
+  size?: string;
+  negative_prompt?: string;
+  seed?: number;
+  batch_size?: number;
+  image_strength?: number;
+  first_image_url?: string;
+  last_image_url?: string;
+  style_image_url?: string;
+  character_image_url?: string;
+  product_image_url?: string;
+  reference_strength?: number;
+  source_asset_version_id?: number;
 };
 
 export type PortDef = {
@@ -113,6 +141,8 @@ export type PaletteItem = {
 
 export const EXIT_NODE_TYPES: WfNodeType[] = [
   "TextToImage",
+  "ImageCompare",
+  "SpeechToText",
   "ImageToVideo",
   "VideoTrim",
   "VideoMux",

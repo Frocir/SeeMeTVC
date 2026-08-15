@@ -14,8 +14,6 @@ from app.services.net import make_async_client
 
 LLM_HTTP_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
-LLM_ROLES = ("chat", "brief", "shot")
-
 SYSTEM_BRIEF = (
     "你是美妆 TVC 文案。根据用户给出的品牌、卖点、口号，写一段可直接给下游使用的 Brief。"
     "只输出正文，不要标题或 Markdown。"
@@ -84,38 +82,6 @@ def anthropic_headers(key: str, *, base_url: str) -> dict[str, str]:
     return headers
 
 
-def is_simulate_channel(channel: Channel) -> bool:
-    provider = (channel.provider or "").strip().lower()
-    model = (channel.model_id or "").strip().lower()
-    kind = (channel.kind or "").strip().lower()
-    if kind and kind != "llm":
-        return False
-    return provider in {"mock", "local-simulate", "simulate"} or model == "llm-local-simulate"
-
-
-def simulate_complete(*, role: str, user: str, want_narration: bool = True) -> str:
-    """Instant local reply so demo runs without a real LLM key."""
-    brand = "SeeMe"
-    for line in (user or "").splitlines():
-        if line.startswith("品牌："):
-            brand = line.split("：", 1)[-1].strip() or brand
-            break
-    if role == "brief":
-        return (
-            f"{brand} 新品短片 Brief：柔光特写，先见产品再见面部气色，"
-            "卖点落在水光肌与持妆，收束口号自然出画。"
-        )
-    if role == "shot":
-        prompt = (
-            '{"prompt":"Cinematic beauty close-up, soft key light, '
-            f'{brand} device on vanity, dewy skin, slow push-in, 16:9"'
-        )
-        if want_narration:
-            return prompt + ',"narration":"看见更好的自己，妆感干净，气色刚刚好。"}'
-        return prompt + "}"
-    return f"{brand} 美妆短片：柔光、产品特写、一句干净口播。"
-
-
 async def chat_complete(
     channel: Channel,
     *,
@@ -127,12 +93,6 @@ async def chat_complete(
     user = (user or "").strip()
     if not user:
         raise LlmError("LLM 缺少输入文本")
-    if is_simulate_channel(channel):
-        return simulate_complete(
-            role=role if role in LLM_ROLES else "chat",
-            user=user,
-            want_narration=want_narration,
-        )
     return await chat_messages(
         channel,
         messages=[{"role": "user", "content": user}],
@@ -167,12 +127,9 @@ async def chat_messages(
     cleaned = _normalize_chat_messages(messages)
     if not cleaned:
         raise LlmError("请输入内容")
-    if is_simulate_channel(channel):
-        last = next((m["content"] for m in reversed(cleaned) if m["role"] == "user"), "")
-        return simulate_complete(role="chat", user=last)
     key = (channel.api_key or "").strip()
     if not key:
-        raise LlmError("未配置 LLM API Key，请超管填写并启用渠道，或改用「本地 LLM 模拟」")
+        raise LlmError("未配置 LLM API Key，请超管填写并启用渠道")
     model = (channel.upstream_model or channel.model_id or "").strip()
     if not model:
         raise LlmError("LLM 渠道未填写 upstream_model")
@@ -289,19 +246,9 @@ async def chat_turn(
     tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """One Agent LLM step. Yields token / message / tool_calls dicts."""
-    if is_simulate_channel(channel):
-        result = _simulate_tools(messages, tools or [])
-        if result.get("kind") == "tool_calls":
-            yield result
-            return
-        text = str(result.get("text") or "")
-        if text:
-            yield {"kind": "token", "text": text}
-        yield {"kind": "message", "text": text}
-        return
     key = (channel.api_key or "").strip()
     if not key:
-        raise LlmError("未配置 LLM API Key，请超管填写并启用渠道，或改用「本地 LLM 模拟」")
+        raise LlmError("未配置 LLM API Key，请超管填写并启用渠道")
     model = (channel.upstream_model or channel.model_id or "").strip()
     if not model:
         raise LlmError("LLM 渠道未填写 upstream_model")
@@ -316,54 +263,6 @@ async def chat_turn(
         channel, key=key, model=model, system=system, messages=messages, tools=tools or []
     ):
         yield ev
-
-
-def _simulate_tools(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
-    names = {
-        str((t.get("function") or {}).get("name") or t.get("name") or "")
-        for t in tools
-        if isinstance(t, dict)
-    }
-    last_user = ""
-    last_role = ""
-    for m in messages:
-        last_role = str(m.get("role") or "")
-        if last_role == "user":
-            last_user = str(m.get("content") or "")
-    if last_role == "tool":
-        return {
-            "kind": "message",
-            "text": "已在画布上执行刚才的操作。还可以继续改节点、连线，或说明下一镜。",
-        }
-    text = last_user
-    def _call(name: str, args: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "kind": "tool_calls",
-            "calls": [{"id": "sim_" + name, "name": name, "arguments": args}],
-        }
-
-    if "get_graph" in names and any(k in text for k in ("画布", "现在", "节点", "看看", "图上")):
-        return _call("get_graph", {})
-    if "add_node" in names:
-        if any(k in text for k in ("文生图", "生图", "出图")):
-            return _call("add_node", {"node_type": "TextToImage", "label": "文生图"})
-        if any(k in text for k in ("图生视频", "出视频", "出片", "视频节点")):
-            return _call("add_node", {"node_type": "ImageToVideo", "label": "图生视频"})
-        if any(k in text for k in ("LLM", "单镜", "brief", "Brief", "文案节点")):
-            role = "brief" if "brief" in text.lower() or "文案" in text else "shot"
-            return _call(
-                "add_node",
-                {"node_type": "LlmText", "label": "LLM", "data": {"llmRole": role}},
-            )
-        if any(k in text for k in ("加节点", "加一个", "添加文本", "Brief 节点", "文本节点", "搭")):
-            return _call("add_node", {"node_type": "TextAsset", "label": "Brief"})
-    return {
-        "kind": "message",
-        "text": (
-            "（本地模拟）我可以帮你问清 Brief，或在画布上加节点/连线。"
-            "试着说：加一个 Brief 文本节点、加 LLM 单镜、或说明品牌和卖点。"
-        ),
-    }
 
 
 def _openai_payload_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

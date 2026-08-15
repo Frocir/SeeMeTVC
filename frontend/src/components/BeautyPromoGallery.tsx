@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { BEAUTY_PROMOS, BEAUTY_TAGS, type BeautyPromo } from "../beautyAssets";
+import { LOOKBOOK_PROMOS, LOOKBOOK_TAGS, type BeautyPromo } from "../beautyAssets";
 
 type Props = {
   onPick?: (promo: BeautyPromo) => void;
@@ -14,11 +14,13 @@ export default function BeautyPromoGallery({
   title = "美妆 TVC 宣传素材",
   subtitle = "点击素材可填入提示词，快速开拍唇妆 / 底妆 / 护肤广告片",
 }: Props) {
-  const [tag, setTag] = useState<(typeof BEAUTY_TAGS)[number]>("全部");
-  const list = useMemo(
-    () => (tag === "全部" ? BEAUTY_PROMOS : BEAUTY_PROMOS.filter((p) => p.tag === tag)),
-    [tag],
-  );
+  const [tag, setTag] = useState<(typeof LOOKBOOK_TAGS)[number]>("全部");
+  const list = useMemo(() => {
+    if (tag === "全部") return LOOKBOOK_PROMOS;
+    if (tag === "美学") return LOOKBOOK_PROMOS.filter((p) => p.kind === "beauty");
+    if (tag === "硬件") return LOOKBOOK_PROMOS.filter((p) => p.kind === "hardware");
+    return LOOKBOOK_PROMOS.filter((p) => p.tag === tag);
+  }, [tag]);
 
   return (
     <div className={`promo-block${compact ? " is-compact" : ""}`}>
@@ -31,7 +33,7 @@ export default function BeautyPromoGallery({
       </div>
 
       <div className="template-strip" style={{ marginBottom: "0.9rem" }}>
-        {BEAUTY_TAGS.map((t) => (
+        {LOOKBOOK_TAGS.map((t) => (
           <button
             key={t}
             type="button"

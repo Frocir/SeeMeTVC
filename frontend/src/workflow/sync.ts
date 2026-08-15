@@ -13,7 +13,11 @@ export function readSourcePort(data: WfData, handle?: string | null): Partial<Wf
   }
   if (h === "image" || h === "frames") {
     const frames = Array.isArray(out.frames) ? out.frames : Array.isArray(data.frames) ? data.frames : [];
-    const url = String(out.image_url ?? data.image_url ?? frames[0] ?? "").trim();
+    const selected =
+      data.selected === "before" ? data.before_url : data.selected === "after" ? data.after_url : "";
+    const url = String(
+      out.image_url ?? data.image_url ?? data.url ?? selected ?? frames[0] ?? "",
+    ).trim();
     return url ? { image_url: url } : {};
   }
   if (h === "video" || h === "clips" || h === "result") {
@@ -31,6 +35,10 @@ export function readSourcePort(data: WfData, handle?: string | null): Partial<Wf
     const text = typeof val === "string" ? val : val == null ? "" : JSON.stringify(val, null, 2);
     const trimmed = text.trim();
     return trimmed ? { text: trimmed, prompt: trimmed } : {};
+  }
+  if (h === "srt") {
+    const srt = String(out.srt ?? data.srt ?? "").trim();
+    return srt ? { text: srt, prompt: srt, srt } : {};
   }
   const prompt = String(out.prompt ?? data.prompt ?? "").trim();
   const text = String(out.text ?? data.text ?? prompt).trim();
@@ -54,14 +62,26 @@ export function writeTargetPort(
   if (th === "image") {
     return incoming.image_url ? { image_url: incoming.image_url } : {};
   }
-  if (th === "video" || th === "clips") {
-    const url = incoming.clip_url || incoming.result_url || incoming.preview_url;
+  if (th === "before") {
+    return incoming.image_url ? { before_url: incoming.image_url } : {};
+  }
+  if (th === "after") {
+    return incoming.image_url ? { after_url: incoming.image_url } : {};
+  }
+  if (th === "video" || th === "clips" || th === "media") {
+    const url = incoming.clip_url || incoming.result_url || incoming.preview_url || incoming.media_url;
+    if (th === "media") {
+      const media = url || incoming.audio_url;
+      if (!media) return {};
+      if (incoming.audio_url && !url) return { media_url: incoming.audio_url, audio_url: incoming.audio_url };
+      return { media_url: media, clip_url: media, result_url: media, preview_url: media };
+    }
     if (!url) return {};
     if (nt === "MixAudio") return { clip_url: url, preview_url: url };
     return { clip_url: url, result_url: url, preview_url: url };
   }
   if (th === "audio" || th === "bgm" || th === "vo") {
-    return incoming.audio_url ? { audio_url: incoming.audio_url } : {};
+    return incoming.audio_url ? { audio_url: incoming.audio_url, media_url: incoming.audio_url } : {};
   }
   if (th === "prompt") {
     const p = incoming.prompt || incoming.text;

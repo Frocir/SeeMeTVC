@@ -1,41 +1,41 @@
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Channel, User, UserRole
+from app.models import AssetVersion, Channel, User, UserRole, VideoJob
 from app.security import hash_password
 
 _log = logging.getLogger("seemetvc.bootstrap")
 
 AGNES_CHANNEL_NAME = "Agnes AI Pavo (free)"
-LOCAL_SIM_CHANNEL_NAME = "本地seedance模拟版（Seedance LocalSimulate）"
 LITE_CHANNEL_NAME = "Seedance Lite（火山方舟）"
 SEEDANCE25_CHANNEL_NAME = "Seedance 2.5（火山方舟）"
-LOCAL_SIM_MODEL_ID = "seedance-local-simulate"
 OPENAI_LLM_CHANNEL_NAME = "OpenAI 兼容 · 对话"
 ANTHROPIC_LLM_CHANNEL_NAME = "Anthropic · 对话"
 TTS_CHANNEL_NAME = "Edge TTS（aisrv）"
-IMAGE_SIM_CHANNEL_NAME = "本地文生图模拟"
-IMAGE_SIM_MODEL_ID = "t2i-local-simulate"
 OPENAI_IMAGE_CHANNEL_NAME = "OpenAI 兼容 · 图像"
-LLM_SIM_CHANNEL_NAME = "本地 LLM 模拟"
-LLM_SIM_MODEL_ID = "llm-local-simulate"
+GEMINI_IMAGE_CHANNEL_NAME = "向量引擎 · Gemini 文生图"
+OPENAI_ASR_CHANNEL_NAME = "OpenAI 兼容 · 语音识别"
 
 LITE_PRIORITY = 80
 SEEDANCE25_PRIORITY = 70
-LOCAL_SIM_PRIORITY = 40
 AGNES_PRIORITY = 10
-LOCAL_SIM_PRIORITY_OFFLINE = 100
+
+_MOCK_MODEL_IDS = (
+    "seedance-local-simulate",
+    "seedance-mock",
+    "t2i-local-simulate",
+    "asr-local-simulate",
+    "llm-local-simulate",
+)
 
 ARK_BASE = "https://ark.cn-beijing.volces.com"
 # 默认可被超管改成控制台里的「推理接入点 ID」(ep-xxx)
 LITE_UPSTREAM = "doubao-seedance-1-0-lite-t2v-250428"
 SEEDANCE25_UPSTREAM = "doubao-seedance-2-0-260128"
 
-_LEGACY_LOCAL_NAMES = ("Seedance Mock (local)", "Seedance Lite (mock)")
-_LEGACY_LOCAL_MODEL_IDS = ("seedance-mock",)
 _LEGACY_LITE_NAMES = ("Seedance Lite (fal)", "Seedance Lite (fal)")
 _LEGACY_25_NAMES = ("Seedance 2.5 (fal)", "Seedance 2.5 (disabled)")
 
@@ -74,7 +74,10 @@ async def ensure_bootstrap_data(db: AsyncSession) -> None:
     await _ensure_llm_channels(db)
     await _ensure_tts_channel(db)
     await _ensure_image_channel(db)
+    await _ensure_gemini_image_channel(db)
+    await _ensure_asr_channel(db)
     await _heal_channels(db)
+    await _retire_mock_channels(db)
     await db.commit()
 
 
@@ -83,65 +86,35 @@ async def _get_by_name(db: AsyncSession, name: str) -> Channel | None:
     return result.scalar_one_or_none()
 
 
-async def _any_enabled_ark(db: AsyncSession) -> bool:
-    result = await db.execute(
-        select(Channel).where(
-            Channel.provider.in_(("ark", "volc", "volcengine", "fal")),
-            Channel.enabled.is_(True),
-        )
+def _is_mock_channel(ch: Channel) -> bool:
+    provider = (ch.provider or "").strip().lower()
+    model = (ch.model_id or "").strip().lower()
+    upstream = (ch.upstream_model or "").strip().lower()
+    key = (ch.api_key or "").strip().lower()
+    return (
+        provider in {"mock", "local-simulate", "simulate"}
+        or model in _MOCK_MODEL_IDS
+        or upstream in {"local-simulate", "simulate"}
+        or key.startswith("mock:")
     )
-    return any(
-        _looks_like_real_key(ch.api_key) and ch.model_id in {"seedance-lite", "seedance-2.5"}
-        for ch in result.scalars().all()
-    )
+
+
+async def _retire_mock_channels(db: AsyncSession) -> None:
+    """Delivery: drop leftover local-simulate rows so they cannot be selected."""
+    result = await db.execute(select(Channel))
+    mocks = [ch for ch in result.scalars().all() if _is_mock_channel(ch)]
+    if not mocks:
+        return
+    ids = [ch.id for ch in mocks]
+    await db.execute(update(VideoJob).where(VideoJob.channel_id.in_(ids)).values(channel_id=None))
+    await db.execute(update(AssetVersion).where(AssetVersion.channel_id.in_(ids)).values(channel_id=None))
+    for ch in mocks:
+        await db.delete(ch)
+    _log.info("已移除 %s 条本地模拟渠道", len(mocks))
 
 
 async def _ensure_seedance_channels(db: AsyncSession) -> None:
     """Seedance Lite / 2.5 via 火山方舟 Ark. Keys only via 超管 UI."""
-
-    local = await _get_by_name(db, LOCAL_SIM_CHANNEL_NAME)
-    if local is None:
-        for legacy_name in _LEGACY_LOCAL_NAMES:
-            legacy = await _get_by_name(db, legacy_name)
-            if legacy is not None:
-                legacy.name = LOCAL_SIM_CHANNEL_NAME
-                local = legacy
-                break
-    if local is None:
-        result = await db.execute(
-            select(Channel).where(Channel.provider == "mock").order_by(Channel.id.asc()).limit(1)
-        )
-        local = result.scalar_one_or_none()
-        if local is not None and (local.kind or "") in {"llm", "image", "tts"}:
-            local = None
-
-    local_remark = (
-        "本地 ffmpeg 样片（离线演示，非真实 Seedance）。"
-        "真正 Seedance 请超管填写火山方舟 ARK_API_KEY 并启用 Lite / 2.5。"
-    )
-    if local is None:
-        db.add(
-            Channel(
-                name=LOCAL_SIM_CHANNEL_NAME,
-                provider="mock",
-                base_url="",
-                api_key="",
-                model_id=LOCAL_SIM_MODEL_ID,
-                upstream_model="local-simulate",
-                cost_per_second=0.0,
-                priority=LOCAL_SIM_PRIORITY_OFFLINE,
-                enabled=True,
-                kind="video",
-                remark=local_remark,
-            )
-        )
-    else:
-        local.name = LOCAL_SIM_CHANNEL_NAME
-        local.provider = "mock"
-        local.model_id = LOCAL_SIM_MODEL_ID
-        local.upstream_model = "local-simulate"
-        local.enabled = True
-        local.remark = local_remark
 
     await _ensure_ark_model_channel(
         db,
@@ -201,8 +174,7 @@ async def _ensure_ark_model_channel(
             .limit(1)
         )
         ch = result.scalar_one_or_none()
-        # Don't steal mock rows
-        if ch is not None and ch.provider == "mock":
+        if ch is not None and _is_mock_channel(ch):
             ch = None
 
     if ch is None:
@@ -270,32 +242,6 @@ async def _ensure_agnes_channel(db: AsyncSession) -> None:
 
 
 async def _ensure_llm_channels(db: AsyncSession) -> None:
-    sim = await _get_by_name(db, LLM_SIM_CHANNEL_NAME)
-    sim_remark = "本地即时文案（不调上游、不扣费）。真模型请另启用 OpenAI / Anthropic 并填 Key。"
-    if sim is None:
-        db.add(
-            Channel(
-                name=LLM_SIM_CHANNEL_NAME,
-                provider="mock",
-                kind="llm",
-                base_url="",
-                api_key="",
-                model_id=LLM_SIM_MODEL_ID,
-                upstream_model="local-simulate",
-                cost_per_second=0.0,
-                priority=95,
-                enabled=True,
-                remark=sim_remark,
-            )
-        )
-    else:
-        sim.kind = "llm"
-        sim.provider = "mock"
-        sim.model_id = LLM_SIM_MODEL_ID
-        sim.upstream_model = "local-simulate"
-        sim.enabled = True
-        sim.remark = sim_remark
-
     openai = await _get_by_name(db, OPENAI_LLM_CHANNEL_NAME)
     if openai is None:
         # Don't resurrect the official row if the admin deleted it and already
@@ -389,32 +335,6 @@ async def _ensure_tts_channel(db: AsyncSession) -> None:
 
 
 async def _ensure_image_channel(db: AsyncSession) -> None:
-    ch = await _get_by_name(db, IMAGE_SIM_CHANNEL_NAME)
-    remark = "本地占位图（离线演示，不调上游、不扣费）。真出图请启用 OpenAI 兼容图像渠道。"
-    if ch is None:
-        db.add(
-            Channel(
-                name=IMAGE_SIM_CHANNEL_NAME,
-                provider="mock",
-                kind="image",
-                base_url="",
-                api_key="",
-                model_id=IMAGE_SIM_MODEL_ID,
-                upstream_model="local-simulate",
-                cost_per_second=0.0,
-                priority=95,
-                enabled=True,
-                remark=remark,
-            )
-        )
-    else:
-        ch.kind = "image"
-        ch.provider = "mock"
-        ch.model_id = IMAGE_SIM_MODEL_ID
-        ch.upstream_model = "local-simulate"
-        ch.enabled = True
-        ch.remark = remark
-
     openai = await _get_by_name(db, OPENAI_IMAGE_CHANNEL_NAME)
     if openai is None:
         existing = await db.execute(
@@ -449,47 +369,107 @@ async def _ensure_image_channel(db: AsyncSession) -> None:
             openai.remark = "OpenAI 兼容 Images API：/v1/images/generations。image 渠道的 cost_per_second 表示单张图片成本；超管改 Key 后启用。"
 
 
-async def _heal_channels(db: AsyncSession) -> None:
-    has_ark = await _any_enabled_ark(db)
+async def _ensure_gemini_image_channel(db: AsyncSession) -> None:
+    settings = get_settings()
+    key = (settings.vectorengine_api_key or "").strip()
+    remark = (
+        "向量引擎 Gemini 原生文生图：POST /v1beta/models/{model}:generateContent。"
+        "默认 gemini-2.5-flash-image。超管改 Key 后启用。"
+    )
+    ch = await _get_by_name(db, GEMINI_IMAGE_CHANNEL_NAME)
+    if ch is None:
+        existing = await db.execute(
+            select(Channel)
+            .where(Channel.kind == "image", Channel.provider.in_(("gemini", "vectorengine", "google")))
+            .limit(1)
+        )
+        ch = existing.scalar_one_or_none()
+    if ch is None:
+        db.add(
+            Channel(
+                name=GEMINI_IMAGE_CHANNEL_NAME,
+                provider="gemini",
+                kind="image",
+                base_url="https://api.vectorengine.ai",
+                api_key=key if _looks_like_real_key(key) else "",
+                model_id="gemini-2.5-flash-image",
+                upstream_model="gemini-2.5-flash-image",
+                cost_per_second=0.0,
+                priority=90,
+                enabled=_looks_like_real_key(key),
+                remark=remark,
+            )
+        )
+        return
+    ch.name = GEMINI_IMAGE_CHANNEL_NAME
+    ch.kind = "image"
+    ch.provider = "gemini"
+    if not (ch.base_url or "").strip() or "openai.com" in (ch.base_url or ""):
+        ch.base_url = "https://api.vectorengine.ai"
+    if not (ch.model_id or "").strip():
+        ch.model_id = "gemini-2.5-flash-image"
+    if not (ch.upstream_model or "").strip():
+        ch.upstream_model = ch.model_id
+    ch.remark = remark
+    if _looks_like_real_key(key) and not _looks_like_real_key(ch.api_key):
+        ch.api_key = key
+        ch.enabled = True
 
+
+async def _ensure_asr_channel(db: AsyncSession) -> None:
+    openai = await _get_by_name(db, OPENAI_ASR_CHANNEL_NAME)
+    if openai is None:
+        existing = await db.execute(
+            select(Channel).where(Channel.kind == "asr", Channel.provider == "openai").limit(1)
+        )
+        if existing.scalar_one_or_none() is None:
+            db.add(
+                Channel(
+                    name=OPENAI_ASR_CHANNEL_NAME,
+                    provider="openai",
+                    kind="asr",
+                    base_url="https://api.openai.com/v1",
+                    api_key="",
+                    model_id="whisper-1",
+                    upstream_model="whisper-1",
+                    cost_per_second=0.0,
+                    priority=70,
+                    enabled=False,
+                    remark="OpenAI 兼容 Transcriptions API：/v1/audio/transcriptions。超管改 Key 后启用。",
+                )
+            )
+    else:
+        openai.kind = "asr"
+        openai.provider = openai.provider or "openai"
+        if not (openai.base_url or "").strip():
+            openai.base_url = "https://api.openai.com/v1"
+        if not (openai.model_id or "").strip():
+            openai.model_id = "whisper-1"
+        if not (openai.upstream_model or "").strip():
+            openai.upstream_model = openai.model_id
+        if not (openai.remark or "").strip():
+            openai.remark = "OpenAI 兼容 Transcriptions API：/v1/audio/transcriptions。超管改 Key 后启用。"
+
+
+async def _heal_channels(db: AsyncSession) -> None:
     result = await db.execute(select(Channel))
     for ch in result.scalars().all():
         kind = (ch.kind or "").strip().lower()
-        if kind not in {"video", "llm", "tts", "image"}:
+        if kind not in {"video", "llm", "tts", "image", "asr"}:
             if ch.provider in {"openai", "anthropic"} and "tts" in (ch.model_id or "").lower():
                 ch.kind = "tts"
+            elif ch.provider in {"openai", "anthropic"} and (
+                "whisper" in (ch.model_id or "").lower() or "asr" in (ch.model_id or "").lower()
+            ):
+                ch.kind = "asr"
             elif ch.provider in {"openai", "anthropic"}:
                 ch.kind = "llm"
             else:
                 ch.kind = "video"
-        if ch.kind == "tts":
+        if ch.kind in {"tts", "asr"}:
             continue
         if not _looks_like_real_key(ch.api_key):
             ch.api_key = ""
-
-    result = await db.execute(select(Channel).where(Channel.provider == "mock"))
-    for local in result.scalars().all():
-        if (local.kind or "") == "image" or local.model_id == IMAGE_SIM_MODEL_ID:
-            local.kind = "image"
-            local.name = IMAGE_SIM_CHANNEL_NAME
-            local.model_id = IMAGE_SIM_MODEL_ID
-            local.upstream_model = "local-simulate"
-            local.enabled = True
-            continue
-        if (local.kind or "") == "llm" or local.model_id == LLM_SIM_MODEL_ID:
-            local.kind = "llm"
-            local.name = LLM_SIM_CHANNEL_NAME
-            local.model_id = LLM_SIM_MODEL_ID
-            local.upstream_model = "local-simulate"
-            local.enabled = True
-            continue
-        if local.model_id in {"seedance-lite", "seedance-2.5", *_LEGACY_LOCAL_MODEL_IDS}:
-            local.model_id = LOCAL_SIM_MODEL_ID
-        local.name = LOCAL_SIM_CHANNEL_NAME
-        local.upstream_model = "local-simulate"
-        local.priority = LOCAL_SIM_PRIORITY if has_ark else LOCAL_SIM_PRIORITY_OFFLINE
-        local.enabled = True
-        local.kind = "video"
 
     # Any leftover fal seedance → ark
     result = await db.execute(

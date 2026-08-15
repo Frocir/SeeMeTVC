@@ -46,6 +46,7 @@ class ChannelCreate(BaseModel):
     priority: int = 0
     enabled: bool = True
     remark: str = ""
+    config_json: dict = Field(default_factory=dict)
 
 
 class ChannelUpdate(BaseModel):
@@ -60,6 +61,7 @@ class ChannelUpdate(BaseModel):
     priority: int | None = None
     enabled: bool | None = None
     remark: str | None = None
+    config_json: dict | None = None
 
 
 class ChannelOut(BaseModel):
@@ -76,6 +78,8 @@ class ChannelOut(BaseModel):
     remark: str
     # Masked for admin list safety
     api_key_masked: str
+    config_json: dict = Field(default_factory=dict)
+    capabilities: dict = Field(default_factory=dict)
 
     model_config = {"from_attributes": True}
 
@@ -97,6 +101,16 @@ class ModelOptionOut(BaseModel):
     duration_max: int = 30
     supports_audio: bool = False
     supports_image: bool = True
+    capabilities: dict = Field(default_factory=dict)
+
+
+class ChannelCapabilitiesOut(BaseModel):
+    id: int
+    name: str
+    provider: str
+    model_id: str
+    kind: str
+    capabilities: dict = Field(default_factory=dict)
 
 
 class GenerateIn(BaseModel):
@@ -265,13 +279,72 @@ class AgentChatIn(BaseModel):
     workflow_id: int
     model_id: str = ""
     skill_id: str = ""
+    work_mode: str = "plan"
     text: str = Field(min_length=1, max_length=8000)
     selected_node_id: str = ""
     viewport: AgentViewportIn | None = None
 
 
+class AgentSessionPatchIn(BaseModel):
+    skill_id: str | None = None
+    work_mode: str | None = None
+    clear_chat: bool = False
+
+
 class AgentResumeIn(BaseModel):
     workflow_id: int
     accept: bool = True
+    action: str = ""
     selected_node_id: str = ""
     viewport: AgentViewportIn | None = None
+
+
+class AssetVersionOut(BaseModel):
+    id: int
+    workflow_id: int
+    run_id: int | None = None
+    node_id: str = ""
+    node_type: str = ""
+    kind: str
+    url: str = ""
+    thumbnail_url: str = ""
+    text: str = ""
+    prompt: str = ""
+    model_provider: str = ""
+    model_name: str = ""
+    channel_id: int | None = None
+    params: dict = {}
+    cost: float = 0.0
+    status: str = "succeeded"
+    error_message: str = ""
+    favorite: bool = False
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class AssetVersionListOut(BaseModel):
+    items: list[AssetVersionOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class AssetVersionPatchIn(BaseModel):
+    favorite: bool | None = None
+
+
+class AssetVersionBulkDeleteIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class AssetVersionSendIn(BaseModel):
+    x: float | None = None
+    y: float | None = None
+
+
+class AssetVersionSendOut(BaseModel):
+    node_id: str
+    node_type: str
+    graph: dict

@@ -234,85 +234,6 @@ async def extract_frame_at(src: Path, dest: Path, *, at_seconds: float) -> None:
     )
 
 
-async def ensure_mock_demo_clip(duration_seconds: int = 5) -> str:
-    """Create (or reuse) a local demo mp4 for the mock provider.
-
-    Stored under uploads/_mock/ so trim/mux can read from disk without hitting
-    remote sample URLs (which often return 403).
-    """
-    duration_seconds = max(1, min(int(duration_seconds or 5), 15))
-    mock_dir = uploads_root() / "_mock"
-    mock_dir.mkdir(parents=True, exist_ok=True)
-    # v2 LocalSimulate: SMPTE bars (old clips were near-black / labeled MOCK)
-    name = f"demo_localsim_v2_{duration_seconds}s.mp4"
-    path = mock_dir / name
-    public = f"/uploads/_mock/{name}"
-    if path.is_file() and path.stat().st_size > 1000:
-        return public
-
-    ffmpeg = _ffmpeg_bin()
-    tmp_out = mock_dir / f"{name}.partial.mp4"
-
-    async def _encode(with_drawtext: bool) -> None:
-        cmd = [
-            ffmpeg,
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            f"smptebars=s=640x360:d={duration_seconds}",
-            "-f",
-            "lavfi",
-            "-i",
-            f"sine=f=440:d={duration_seconds}",
-        ]
-        if with_drawtext:
-            cmd += [
-                "-vf",
-                (
-                    f"drawtext=text='LocalSimulate {duration_seconds}s':"
-                    "fontsize=36:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:"
-                    "box=1:boxcolor=black@0.45:boxborderw=12"
-                ),
-            ]
-        cmd += [
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "28",
-            "-c:a",
-            "aac",
-            "-shortest",
-            "-movflags",
-            "+faststart",
-            str(tmp_out),
-        ]
-        await run_ffmpeg(cmd)
-
-    try:
-        try:
-            await _encode(True)
-        except MediaOpsError:
-            await _encode(False)
-        if path.exists():
-            path.unlink()
-        tmp_out.replace(path)
-    except Exception:
-        if tmp_out.exists():
-            try:
-                tmp_out.unlink()
-            except OSError:
-                pass
-        raise
-    if not path.is_file() or path.stat().st_size < 1000:
-        raise MediaOpsError("mock 样片生成失败")
-    return public
-
-
 async def concat_videos(user_id: int, urls: list[str]) -> str:
     if not urls:
         raise MediaOpsError("没有可拼接的视频")
@@ -470,73 +391,6 @@ async def trim_video(user_id: int, url: str, start: float, end: float) -> str:
         )
 
     return _public_upload_url(user_id, out_name)
-
-
-DEMO_BGM_NAME = "demo_bgm_v1.wav"
-DEMO_BGM_URL = f"/uploads/_mock/{DEMO_BGM_NAME}"
-DEMO_T2I_NAME = "demo_t2i_v1.png"
-DEMO_T2I_URL = f"/uploads/_mock/{DEMO_T2I_NAME}"
-
-
-async def ensure_demo_bgm(duration_seconds: int = 12) -> str:
-    """Quiet sine bed for official templates (replaceable, not a commercial track)."""
-    duration_seconds = max(4, min(int(duration_seconds or 12), 30))
-    mock_dir = uploads_root() / "_mock"
-    mock_dir.mkdir(parents=True, exist_ok=True)
-    path = mock_dir / DEMO_BGM_NAME
-    if path.is_file() and path.stat().st_size > 400:
-        return DEMO_BGM_URL
-    ffmpeg = _ffmpeg_bin()
-    tmp_out = mock_dir / f"{DEMO_BGM_NAME}.partial.wav"
-    await run_ffmpeg(
-        [
-            ffmpeg,
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            f"sine=f=196:d={duration_seconds}",
-            "-af",
-            "volume=0.08",
-            str(tmp_out),
-        ]
-    )
-    if path.exists():
-        path.unlink()
-    tmp_out.replace(path)
-    if not path.is_file() or path.stat().st_size < 400:
-        raise MediaOpsError("演示床垫音频生成失败")
-    return DEMO_BGM_URL
-
-
-async def ensure_demo_t2i() -> str:
-    """Placeholder still for local text-to-image simulate."""
-    mock_dir = uploads_root() / "_mock"
-    mock_dir.mkdir(parents=True, exist_ok=True)
-    path = mock_dir / DEMO_T2I_NAME
-    if path.is_file() and path.stat().st_size > 400:
-        return DEMO_T2I_URL
-    ffmpeg = _ffmpeg_bin()
-    tmp_out = mock_dir / f"{DEMO_T2I_NAME}.partial.png"
-    await run_ffmpeg(
-        [
-            ffmpeg,
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=0x2a1a22:s=720x1280:d=1",
-            "-frames:v",
-            "1",
-            str(tmp_out),
-        ]
-    )
-    if path.exists():
-        path.unlink()
-    tmp_out.replace(path)
-    if not path.is_file() or path.stat().st_size < 400:
-        raise MediaOpsError("文生图占位图生成失败")
-    return DEMO_T2I_URL
 
 
 async def mix_audio(
@@ -783,3 +637,42 @@ async def burn_subtitle(user_id: int, video_url: str, text: str) -> str:
     if not out_path.is_file() or out_path.stat().st_size < 1000:
         raise MediaOpsError("字幕烧录输出为空")
     return _public_upload_url(user_id, out_name)
+
+
+async def extract_audio(user_id: int, media_url: str) -> tuple[str, Path]:
+    """Extract 16 kHz mono WAV from video or audio. Returns (public URL, local path)."""
+    if not media_url:
+        raise MediaOpsError("抽音频缺少输入")
+    ffmpeg = _ffmpeg_bin()
+    uid = max(0, int(user_id or 0))
+    user_dir = uploads_root() / (str(uid) if uid else "_asr")
+    user_dir.mkdir(parents=True, exist_ok=True)
+    out_name = f"{uuid.uuid4().hex}_asr.wav"
+    out_path = user_dir / out_name
+    with tempfile.TemporaryDirectory(prefix="seemetvc_asr_") as tmp:
+        src = Path(tmp) / "in.media"
+        await _download(media_url, src)
+        try:
+            await run_ffmpeg(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(src),
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(out_path),
+                ]
+            )
+        except MediaOpsError as exc:
+            raise MediaOpsError("无法从该文件抽出音轨") from exc
+    if not out_path.is_file() or out_path.stat().st_size < 64:
+        raise MediaOpsError("抽音频结果为空")
+    if uid:
+        return _public_upload_url(uid, out_name), out_path
+    return f"/uploads/_asr/{out_name}", out_path

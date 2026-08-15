@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     local_proxy_host: str = "127.0.0.1"
+    vectorengine_api_key: str = ""
     aisrv_api_key: str = ""
     aisrv_port: int = 5050
     aisrv_base_url: str = ""

@@ -29,7 +29,7 @@ npm run dev
 docker compose up --build
 ```
 
-超管在 **超管** 页启用渠道并填 Key：视频 / LLM / TTS / 文生图。无 Key 时可用「本地 LLM 模拟」「本地文生图模拟」、mock 视频。改 Agent 相关表后需重启一次后端。
+超管在 **超管** 页启用渠道并填 Key：视频 / LLM / TTS / 文生图 / ASR。改 Agent 相关表后需重启一次后端。
 
 ## 全链路架构
 
@@ -41,13 +41,13 @@ docker compose up --build
 FastAPI  backend/
   鉴权 · 项目 graph_json · 余额流水
   Agent 循环（skill + 近 16 轮记忆 + 摘要）
-       ├─ LLM 渠道（OpenAI 兼容 / Anthropic / 本地模拟）
+       ├─ LLM 渠道（OpenAI 兼容 / Anthropic）
        ├─ 进程内 MCP（改图 / run_*）──► 同一套 workflow 执行器
        │                              target_ids 跑单节点
        └─ 写库：对话、graph、撤销快照（最多 50 份）
               │
-              ├─ 图生视频渠道（Seedance / Agnes / mock）
-              ├─ 文生图（目前仅本地占位图）
+              ├─ 图生视频渠道（Seedance / Agnes）
+              ├─ 文生图（Gemini 原生 / OpenAI 兼容 Images API）
               ├─ TTS → aisrv（Edge TTS，OpenAI speech 兼容）
               └─ ffmpeg 裁切 / 拼接 / 混音 / 字幕
 ```
@@ -70,21 +70,22 @@ FastAPI  backend/
 - 工作区项目网格；进入画布手搭 DAG。
 - 节点：文本 / 图 / 视频 / 音频、LLM（对话 / Brief / 单镜）、文生图、图生视频、TTS、裁切、拼接、拆音轨、混音、烧字幕。
 - 官方模板可预填一条龙；可单节点跑或一键跑；输入变化可自动排队（Agent 改图时会抑制，避免抢跑）。
+- 顶栏 **一键排版**：按依赖分层，同层同一列、列内紧凑，先铺最密的那列；连线仍是原来的贝塞尔曲线。Agent 搭完图也会调同一套 `layout_graph`。
 - 素材库、上传、检查器改参。
 
 **TVC Agent**
 
 - 每项目一条对话线程，刷新还在。
-- Skill 下拉：`grill-me`（先问清 Brief）、`wes-anderson-tvc`（自研安德森风导演流程，不是 LibTV 副本）。规程在 `backend/app/skills/*/SKILL.md`。
-- 图工具：`get_graph` / `add_node` / `patch_node` / `connect` / `delete_node`。
+- 工作模式 **Auto / Plan**（默认 Plan）：Plan 先出方案卡，按 Brief → 分镜 → 搭图逐环点开始；Auto 四件套齐了就干。扣费确认卡两种模式都不跳。
+- Skill 下拉：导演规程（`wes-anderson-tvc` / `seedance-tvc` 等）。规程在 `backend/app/skills/*/SKILL.md`。
+- 图工具：`get_graph` / `add_node` / `patch_node` / `connect` / `delete_node` / `layout_graph`。
+- 计划工具：`propose_plan` / `complete_stage`（Plan 闸门按环白名单禁工具）。
 - 执行工具：每种可跑节点一个 `run_*`。
-- 流式：字、工具过程、画布更新、确认卡。
+- 流式：字、工具过程、画布更新、方案卡 / 环节卡、确认卡。
 - 顶栏撤销（服务端快照）。
 
 ## 暂不具备，或明显偏弱
 
-- **本地 LLM 模拟几乎不会「当导演」**：只会按关键词加节点，不会认真 grill、也不会自己连线出片。真提问 / 真搭图需要已启用的真 LLM。
-- 文生图没有真模型，只有本地占位图。
 - MCP 不是对外 JSON-RPC 服务，Cursor 等连不上。
 - 没有「新对话」、没有跨项目记忆、没有 Skill 商店。
 - 人物一级库是空页；请在项目里上传图片。
@@ -93,16 +94,3 @@ FastAPI  backend/
 - `connect` 的端口合法性比画布手连要松。
 - 无自动化测试覆盖 Agent。
 - 上线前密钥、限流、权限还要加固。
-
-## 改进计划（先做上面的）
-
-1. **无 Key 也能看懂 Agent**：模拟渠道按 Skill 走完整提问 + 加节点 + 连线（现在演示偏口号）。
-2. **有 Key 走通确认卡出片**：真 LLM 选导演 Skill → 搭图 → 图生视频确认 → 成片上节点。顺带核对长 SSE / 刷新后续确认。
-3. **文生图接真渠道**，与现有视频 / LLM / TTS 一样可配置、可扣费、可进确认卡。
-4. **连线规则与画布一致**，避免 Agent 接出检查器认为非法的边。
-5. **人物库做成能选进节点的资产**，不要长期停在空态。
-6. **需要时再外开 MCP 端口**（鉴权、只读/写图分权），给 Cursor 或其他 client。
-7. **多会话 / 新对话**（现在每项目永远一条线，旧 Brief 会一直占窗口，只能靠摘要）。
-8. **测试与上线加固**：Agent 循环、确认暂停、撤销、扣费退款的回归；密钥与限流。
-
-1–2 是「现在像不像真 Agent」；3–5 是创作闭环；6–8 是平台化。

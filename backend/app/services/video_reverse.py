@@ -27,46 +27,6 @@ SYSTEM_REVERSE = (
 )
 
 
-def _fallback_analysis(*, brief: str, frames: list[str], timeline: list[dict[str, Any]]) -> dict[str, Any]:
-    base = (brief or "").strip() or "美妆产品参考视频"
-    scenes = []
-    source = timeline or [
-        {"index": idx, "frame_url": frame, "start_time": None, "end_time": None, "score": 0.0}
-        for idx, frame in enumerate(frames, start=1)
-    ]
-    for idx, item in enumerate(source, start=1):
-        frame = str(item.get("frame_url") or (frames[idx - 1] if idx <= len(frames) else ""))
-        title = f"Clip {idx:02d}"
-        analysis = "参考关键帧的构图、节奏与光线，使用柔和棚拍光突出产品质地。"
-        scenes.append(
-            {
-                "id": f"scene_{idx:03d}",
-                "index": idx,
-                "title": title,
-                "start_time": item.get("start_time"),
-                "end_time": item.get("end_time"),
-                "frame_url": frame,
-                "score": item.get("score", 0.0),
-                "analysis": analysis,
-                "prompt": (
-                    f"参考关键帧 {idx} 的构图与节奏，{base}。"
-                    "主体保持产品包装、颜色和 logo 稳定；镜头缓慢推进，柔和棚拍光，"
-                    "突出质地、光泽和使用瞬间。不要新增字幕、水印或无关文字。"
-                ),
-                "narration": "让质感被看见，让气色自然发光。",
-                "negative_prompt": "不要字幕、水印、错字、额外 logo、变形瓶身。",
-            }
-        )
-    prompt = scenes[0]["prompt"] if scenes else f"{base}，柔光产品短片，不要字幕水印。"
-    return {
-        "prompt": prompt,
-        "text": "已抽取参考视频关键帧；当前使用本地/模拟反推，建议启用真 LLM 获取更细的镜头语言。",
-        "scenes": scenes,
-        "frames": frames,
-        "timeline": timeline,
-    }
-
-
 def _coerce_json(raw: str) -> dict[str, Any]:
     text = (raw or "").strip()
     start = text.find("{")
@@ -236,15 +196,9 @@ async def reverse_prompt(
     except media_ops.MediaOpsError as exc:
         raise VideoReverseError(str(exc)) from exc
 
-    fallback = _fallback_analysis(brief=brief, frames=frames, timeline=timeline)
     ch = await _pick_llm(db, model_id)
-    if ch is None or llm_svc.is_simulate_channel(ch):
-        return {
-            **fallback,
-            "model_id": ch.model_id if ch is not None else "local-fallback",
-            "frame_strategy": frame_strategy,
-            "prompt_style": prompt_style,
-        }
+    if ch is None:
+        raise VideoReverseError("没有已启用的 LLM 渠道，无法反推参考片。请超管填写并启用对话模型。")
 
     user = "\n".join(
         [
@@ -261,18 +215,12 @@ async def reverse_prompt(
     try:
         raw = await llm_svc.chat_complete(ch, system=SYSTEM_REVERSE, user=user, role="chat")
         parsed = _coerce_json(raw)
-    except Exception:
-        return {
-            **fallback,
-            "model_id": ch.model_id,
-            "frame_strategy": frame_strategy,
-            "prompt_style": prompt_style,
-            "llm_fallback": True,
-        }
+    except Exception as exc:  # noqa: BLE001
+        raise VideoReverseError(f"反推失败：{exc}") from exc
 
-    scenes = _merge_scene_metadata(parsed.get("scenes") or [], fallback=fallback, timeline=timeline)
+    scenes = _merge_scene_metadata(parsed.get("scenes") or [], fallback={"scenes": []}, timeline=timeline)
     if not scenes:
-        scenes = fallback["scenes"]
+        raise VideoReverseError("反推结果没有可用分镜")
     return {
         **parsed,
         "scenes": scenes,

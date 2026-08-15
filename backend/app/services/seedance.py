@@ -1,7 +1,6 @@
 """Upstream video generation clients.
 
 Supports:
-- mock: local demo clip (Seedance LocalSimulate)
 - ark: 火山方舟 Volcengine Ark Seedance（文生/图生）
 - agnes / pavo: Agnes AI free video API
 
@@ -73,12 +72,6 @@ def _client(timeout: float = 60.0, *, force_direct: bool = False) -> httpx.Async
     return make_async_client(timeout=timeout, force_direct=force_direct)
 
 
-def _is_mock(channel: Channel, task_id: str | None = None) -> bool:
-    if task_id and task_id.startswith("mock-"):
-        return True
-    return channel.provider == "mock" or (channel.api_key or "").startswith("mock:")
-
-
 def _is_agnes(channel: Channel) -> bool:
     return channel.provider.lower() in AGNES_PROVIDERS
 
@@ -122,8 +115,6 @@ def fal_family(channel: Channel) -> str:
 def clamp_duration_seconds(channel: Channel, duration_seconds: int) -> int:
     """Clamp duration to what the upstream model accepts."""
     dur = int(duration_seconds or 5)
-    if _is_mock(channel):
-        return max(1, min(dur, 15))
     if _is_agnes(channel):
         return max(2, min(dur, 18))
     family = fal_family(channel)
@@ -168,16 +159,20 @@ async def submit_generation(
     prompt: str,
     duration_seconds: int,
     image_url: str | None = None,
+    last_image_url: str | None = None,
+    style_image_url: str | None = None,
+    character_image_url: str | None = None,
+    product_image_url: str | None = None,
 ) -> str:
     """Submit a generation task and return upstream task id."""
     try:
         image_url = await async_resolve_image_for_upstream(image_url)
+        last_image_url = await async_resolve_image_for_upstream(last_image_url)
+        style_image_url = await async_resolve_image_for_upstream(style_image_url)
+        character_image_url = await async_resolve_image_for_upstream(character_image_url)
+        product_image_url = await async_resolve_image_for_upstream(product_image_url)
     except Exception as exc:  # noqa: BLE001
         raise SeedanceError(str(exc)) from exc
-
-    if _is_mock(channel):
-        dur = clamp_duration_seconds(channel, duration_seconds)
-        return f"mock-{dur}-{asyncio.get_running_loop().time()}"
 
     if _is_agnes(channel):
         return await _submit_agnes(
@@ -186,20 +181,17 @@ async def submit_generation(
 
     if _is_ark(channel):
         return await _submit_ark(
-            channel, prompt=prompt, duration_seconds=duration_seconds, image_url=image_url
+            channel,
+            prompt=prompt,
+            duration_seconds=duration_seconds,
+            image_url=image_url,
+            last_image_url=last_image_url,
+            style_image_url=style_image_url,
+            character_image_url=character_image_url,
+            product_image_url=product_image_url,
         )
 
     raise SeedanceError(f"暂未实现的 provider: {channel.provider}（Seedance 请用 ark）")
-
-
-def _mock_duration_from_task(task_id: str) -> int:
-    try:
-        parts = (task_id or "").split("-")
-        if len(parts) >= 2 and parts[0] == "mock":
-            return max(1, min(int(float(parts[1])), 15))
-    except (TypeError, ValueError):
-        pass
-    return 5
 
 
 async def poll_generation(
@@ -209,16 +201,6 @@ async def poll_generation(
     user_id: int | None = None,
 ) -> tuple[str, str | None]:
     """Return (status, result_url). status in: running|succeeded|failed|rate_limited."""
-    if _is_mock(channel, task_id):
-        await asyncio.sleep(1.0)
-        from app.services.media_ops import MediaOpsError, ensure_mock_demo_clip
-
-        try:
-            url = await ensure_mock_demo_clip(_mock_duration_from_task(task_id))
-        except MediaOpsError as exc:
-            raise SeedanceError(str(exc)) from exc
-        return ("succeeded", url)
-
     if _is_agnes(channel) or task_id.startswith("agnes:"):
         return await _poll_agnes(channel, task_id)
 
@@ -264,18 +246,38 @@ async def _mirror_remote_video(user_id: int, url: str) -> str:
     return f"/uploads/{user_id}/{name}"
 
 
+def _append_ark_image(content: list[dict[str, Any]], url: str | None, role: str | None = None) -> None:
+    if not url:
+        return
+    item: dict[str, Any] = {"type": "image_url", "image_url": {"url": url}}
+    if role:
+        item["role"] = role
+    content.append(item)
+
+
 def _build_ark_payload(
     channel: Channel,
     *,
     prompt: str,
     duration_seconds: int,
     image_url: str | None,
+    last_image_url: str | None = None,
+    style_image_url: str | None = None,
+    character_image_url: str | None = None,
+    product_image_url: str | None = None,
 ) -> dict[str, Any]:
     dur = clamp_duration_seconds(channel, duration_seconds)
     family = fal_family(channel)
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-    if image_url:
-        content.append({"type": "image_url", "image_url": {"url": image_url}})
+    first_last = family == "seedance-2.5" and bool(last_image_url or style_image_url or character_image_url or product_image_url)
+    if first_last:
+        _append_ark_image(content, image_url, "first_frame" if image_url else None)
+        _append_ark_image(content, last_image_url, "last_frame")
+        _append_ark_image(content, style_image_url, "reference_image")
+        _append_ark_image(content, character_image_url, "reference_image")
+        _append_ark_image(content, product_image_url, "reference_image")
+    elif image_url:
+        _append_ark_image(content, image_url)
 
     payload: dict[str, Any] = {
         "model": _ark_model(channel),
@@ -285,7 +287,7 @@ def _build_ark_payload(
         "watermark": False,
     }
     # 有参考图时用 adaptive 跟图；纯文生默认 16:9
-    payload["ratio"] = "adaptive" if image_url else "16:9"
+    payload["ratio"] = "adaptive" if image_url or last_image_url else "16:9"
     if family == "seedance-2.5":
         payload["generate_audio"] = True
     else:
@@ -299,6 +301,10 @@ async def _submit_ark(
     prompt: str,
     duration_seconds: int,
     image_url: str | None,
+    last_image_url: str | None = None,
+    style_image_url: str | None = None,
+    character_image_url: str | None = None,
+    product_image_url: str | None = None,
 ) -> str:
     if not channel.api_key or channel.api_key in {"replace-me", "YOUR_API_KEY", "FAL_KEY", "ARK_API_KEY"}:
         raise SeedanceError("火山方舟渠道未配置 API Key，请在超管后台「改 Key」写入 ARK_API_KEY 后启用")
@@ -306,7 +312,14 @@ async def _submit_ark(
     base = _ark_base(channel)
     url = f"{base}/api/v3/contents/generations/tasks"
     payload = _build_ark_payload(
-        channel, prompt=prompt, duration_seconds=duration_seconds, image_url=image_url
+        channel,
+        prompt=prompt,
+        duration_seconds=duration_seconds,
+        image_url=image_url,
+        last_image_url=last_image_url,
+        style_image_url=style_image_url,
+        character_image_url=character_image_url,
+        product_image_url=product_image_url,
     )
     headers = {
         "Authorization": f"Bearer {channel.api_key.strip()}",

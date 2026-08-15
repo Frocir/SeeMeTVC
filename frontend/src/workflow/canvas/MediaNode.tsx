@@ -1,11 +1,15 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { STATUS_LABEL } from "../../api";
 import { portsFor } from "../ports";
+import { NODE_TYPE_LABEL } from "../labels";
 import { normalizeNodeType, type Scene, type TimelineItem, type WfData, type WfNodeType } from "../types";
+import ImageCompareView from "./ImageCompareView";
+import TranscriptPreview from "./TranscriptPreview";
 
 export type MediaNodeData = WfData & {
   onLabelChange?: (label: string) => void;
   onOpenFullscreen?: (url: string, kind: "image" | "video" | "audio") => void;
+  onPatch?: (patch: Partial<WfData>) => void;
 };
 
 type KindMeta = {
@@ -20,25 +24,33 @@ function kindMeta(nodeType: WfNodeType, data: WfData): KindMeta {
     const role = data.textRole || "brief";
     return {
       key: "text",
-      label: role === "prompt" ? "提示词" : "文本",
+      label: role === "prompt" ? "提示词" : role === "notes" ? "备注" : "文案",
       tone: "text",
     };
   }
-  if (nt === "ImageAsset") return { key: "image", label: "图片", tone: "image" };
-  if (nt === "VideoAsset") return { key: "video", label: "视频", tone: "video" };
-  if (nt === "AudioAsset") return { key: "audio", label: "音频", tone: "audio" };
-  if (nt === "TextToImage") return { key: "image", label: "文生图", tone: "image" };
-  if (nt === "ImageToVideo") return { key: "gen", label: "图生视频", tone: "gen" };
-  if (nt === "VideoTrim") return { key: "tool", label: "裁时长", tone: "tool" };
-  if (nt === "VideoMux") return { key: "tool", label: "拼接", tone: "tool" };
-  if (nt === "MixAudio") return { key: "audio", label: "混音", tone: "audio" };
-  if (nt === "VideoDemux") return { key: "tool", label: "拆音轨", tone: "tool" };
-  if (nt === "VideoReversePrompt") return { key: "text", label: "视频反推", tone: "text" };
-  if (nt === "AudioTrim") return { key: "audio", label: "音频裁切", tone: "audio" };
-  if (nt === "SubtitleBurn") return { key: "tool", label: "字幕", tone: "tool" };
-  if (nt === "TtsSpeak") return { key: "audio", label: "TTS", tone: "audio" };
-  if (nt === "LlmText") return { key: "text", label: "LLM", tone: "text" };
-  return { key: "asset", label: "节点", tone: "asset" };
+  const toneBy: Record<string, string> = {
+    ImageAsset: "image",
+    VideoAsset: "video",
+    AudioAsset: "audio",
+    TextToImage: "image",
+    ImageCompare: "image",
+    SpeechToText: "text",
+    ImageToVideo: "gen",
+    VideoTrim: "tool",
+    VideoMux: "tool",
+    MixAudio: "audio",
+    VideoDemux: "tool",
+    VideoReversePrompt: "text",
+    AudioTrim: "audio",
+    SubtitleBurn: "tool",
+    TtsSpeak: "audio",
+    LlmText: "text",
+  };
+  return {
+    key: toneBy[nt] || "asset",
+    label: NODE_TYPE_LABEL[nt] || "步骤",
+    tone: toneBy[nt] || "asset",
+  };
 }
 
 function KindIcon({ tone }: { tone: string }) {
@@ -120,7 +132,7 @@ function mediaUrl(data: WfData): { kind: "image" | "video" | "audio" | null; url
     nt === "VideoDemux" ||
     nt === "SubtitleBurn";
   const isAudioNode = nt === "AudioAsset" || nt === "TtsSpeak" || nt === "AudioTrim";
-  const isImageNode = nt === "ImageAsset" || nt === "TextToImage";
+  const isImageNode = nt === "ImageAsset" || nt === "TextToImage" || nt === "ImageCompare";
 
   if (isAudioNode && (audioCandidate || fromOut)) {
     const url = audioCandidate || fromOut;
@@ -176,7 +188,7 @@ function textPreview(data: WfData): string {
   const nt = normalizeNodeType(data.nodeType);
   if (nt === "LlmText") return llmPreview(data);
   if (nt === "TextAsset") {
-    return [data.slogan, data.prompt, data.text].filter(Boolean).join("\n");
+    return String(data.prompt || data.text || "").trim();
   }
   if (nt === "VideoReversePrompt") {
     const out = data.runOutput || {};
@@ -192,6 +204,10 @@ function textPreview(data: WfData): string {
     return String(data.prompt || data.text || "").trim();
   }
   if (nt === "TtsSpeak") return String(data.text || data.narration || "").trim();
+  if (nt === "SpeechToText") {
+    const out = data.runOutput || {};
+    return String(out.text || data.text || out.srt || data.srt || "").trim();
+  }
   if (nt === "SubtitleBurn") return String(data.slogan || data.text || "").trim();
   return "";
 }
@@ -226,22 +242,24 @@ function ReversePreview({ data, copy }: { data: WfData; copy: string }) {
 
 function emptyHint(data: WfData): string {
   const nt = normalizeNodeType(data.nodeType);
-  if (nt === "TextAsset") return "输入品牌与卖点";
-  if (nt === "ImageAsset") return "拖入或上传参考图";
-  if (nt === "VideoAsset") return "上传视频片段";
-  if (nt === "AudioAsset") return "上传 BGM 或口播文件";
-  if (nt === "VideoTrim") return "连接上游视频后裁剪";
-  if (nt === "VideoMux") return "连接多段镜头后拼接";
-  if (nt === "MixAudio") return "接满视频、BGM、口播";
-  if (nt === "VideoDemux") return "连接有声视频后拆轨";
-  if (nt === "VideoReversePrompt") return "连接参考视频后反推分镜";
-  if (nt === "AudioTrim") return "连接音频后裁切";
-  if (nt === "SubtitleBurn") return "连接成片后烧 slogan";
-  if (nt === "TtsSpeak") return "连接旁白或填写口播稿";
-  if (nt === "LlmText") return "连接 Brief";
-  if (nt === "TextToImage") return "连接提示词后出图";
-  if (nt === "ImageToVideo") return "连接提示词与参考图";
-  return "等待生成结果";
+  if (nt === "TextAsset") return "写品牌、卖点和口号";
+  if (nt === "ImageAsset") return "上传产品图或人物图";
+  if (nt === "VideoAsset") return "上传参考片或成片";
+  if (nt === "AudioAsset") return "上传配乐或旁白";
+  if (nt === "VideoTrim") return "接上视频后截取几秒";
+  if (nt === "VideoMux") return "接上几段视频后拼成一条";
+  if (nt === "MixAudio") return "接上视频、配乐和口播";
+  if (nt === "VideoDemux") return "接上有声视频后拆出声音";
+  if (nt === "VideoReversePrompt") return "接上参考片后拆分镜";
+  if (nt === "AudioTrim") return "接上音频后截取几秒";
+  if (nt === "SubtitleBurn") return "接上成片后叠一句字";
+  if (nt === "TtsSpeak") return "接上口播稿，或自己填写";
+  if (nt === "LlmText") return "接上文案后写这一镜";
+  if (nt === "TextToImage") return "接上画面描述后出图";
+  if (nt === "ImageCompare") return "接上两张图后对比";
+  if (nt === "SpeechToText") return "接上视频或音频后听写";
+  if (nt === "ImageToVideo") return "接上画面描述和首帧图";
+  return "还没有结果";
 }
 
 export function MediaNode({ data, selected }: NodeProps<Node<MediaNodeData>>) {
@@ -257,7 +275,7 @@ export function MediaNode({ data, selected }: NodeProps<Node<MediaNodeData>>) {
 
   return (
     <div
-      className={`cv-node tone-${meta.tone} ${selected ? "selected" : ""} ${st ? `st-${st}` : ""} ${data.stale ? "stale" : ""} ${data.simulated ? "simulated" : ""}`}
+      className={`cv-node tone-${meta.tone} ${selected ? "selected" : ""} ${st ? `st-${st}` : ""} ${data.stale ? "stale" : ""}`}
     >
       {inputs.map((p, i) => (
         <Handle
@@ -279,7 +297,6 @@ export function MediaNode({ data, selected }: NodeProps<Node<MediaNodeData>>) {
           </span>
           <span className="cv-card-flags">
             {data.stale && <span className="cv-badge stale">过期</span>}
-            {data.simulated && <span className="cv-badge sim">模拟</span>}
             {st === "running" && <span className="cv-badge run">生成中</span>}
             {st && st !== "succeeded" && st !== "running" && (
               <span className="cv-badge err">{STATUS_LABEL[st] || st}</span>
@@ -294,7 +311,15 @@ export function MediaNode({ data, selected }: NodeProps<Node<MediaNodeData>>) {
             if (media.url && media.kind) data.onOpenFullscreen?.(media.url, media.kind);
           }}
         >
-          {nt === "VideoReversePrompt" && (reverseFrames(data).length > 0 || reverseScenes(data).length > 0) ? (
+          {nt === "SpeechToText" ? (
+            <TranscriptPreview data={data} />
+          ) : nt === "ImageCompare" ? (
+            <ImageCompareView
+              data={data}
+              onPatch={data.onPatch}
+              onOpenFullscreen={data.onOpenFullscreen}
+            />
+          ) : nt === "VideoReversePrompt" && (reverseFrames(data).length > 0 || reverseScenes(data).length > 0) ? (
             <ReversePreview data={data} copy={copy} />
           ) : media.kind === "video" && media.url ? (
             <video src={media.url} playsInline controls onClick={(e) => e.stopPropagation()} />

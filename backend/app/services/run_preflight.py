@@ -262,6 +262,7 @@ def cannot_run_reason(
     has_llm_model: bool = True,
     has_tts_model: bool = True,
     has_image_model: bool = True,
+    has_asr_model: bool = True,
 ) -> str | None:
     load_contracts()
     nodes = list((graph or {}).get("nodes") or [])
@@ -356,12 +357,13 @@ def cannot_run_reason(
         return forbid
 
     pool_ids = targets if targets else ids
-    flags = {"video": has_video_model, "llm": has_llm_model, "tts": has_tts_model, "image": has_image_model}
+    flags = {"video": has_video_model, "llm": has_llm_model, "tts": has_tts_model, "image": has_image_model, "asr": has_asr_model}
     msgs = {
         "video": "暂无可用视频模型，无法图生视频。请超管启用渠道后再一键跑。",
-        "llm": "暂无可用 LLM 渠道。请超管启用「本地 LLM 模拟」，或填写真模型 Key 后再一键跑。",
+        "llm": "暂无可用 LLM 渠道。请超管填写并启用对话模型后再一键跑。",
         "tts": "暂无可用 TTS 渠道。请确认 aisrv 已启动，且超管已启用 Edge TTS 渠道。",
-        "image": "暂无可用文生图渠道。请超管启用「本地文生图模拟」后再一键跑。",
+        "image": "暂无可用文生图渠道。请超管填写并启用图像渠道后再一键跑。",
+        "asr": "暂无可用 ASR 渠道。请超管填写并启用语音识别渠道后再一键跑。",
     }
     for nid in pool_ids:
         ch = needs_channel(types.get(nid) or "")

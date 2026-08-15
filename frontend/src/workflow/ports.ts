@@ -4,88 +4,105 @@ import { normalizeNodeType, type PortDef, type WfNodeType } from "./types";
 export const NODE_PORTS: Record<string, { inputs: PortDef[]; outputs: PortDef[] }> = {
   TextAsset: {
     inputs: [],
-    outputs: [{ id: "text", label: "text", kind: "text" }],
+    outputs: [{ id: "text", label: "文案", kind: "text" }],
   },
   ImageAsset: {
     inputs: [],
-    outputs: [{ id: "image", label: "image", kind: "image" }],
+    outputs: [{ id: "image", label: "图片", kind: "image" }],
   },
   VideoAsset: {
-    inputs: [{ id: "video", label: "video", kind: "video" }],
-    outputs: [{ id: "video", label: "video", kind: "video" }],
+    inputs: [{ id: "video", label: "视频", kind: "video" }],
+    outputs: [{ id: "video", label: "视频", kind: "video" }],
   },
   AudioAsset: {
     inputs: [],
-    outputs: [{ id: "audio", label: "audio", kind: "audio" }],
+    outputs: [{ id: "audio", label: "音频", kind: "audio" }],
   },
   LlmText: {
-    inputs: [{ id: "text", label: "text", kind: "text" }],
+    inputs: [{ id: "text", label: "文案", kind: "text" }],
     outputs: [
-      { id: "text", label: "text", kind: "text" },
-      { id: "narration", label: "旁白", kind: "text" },
+      { id: "text", label: "画面描述", kind: "text" },
+      { id: "narration", label: "口播稿", kind: "text" },
     ],
   },
   TextToImage: {
     inputs: [
-      { id: "prompt", label: "prompt", kind: "text" },
+      { id: "prompt", label: "画面描述", kind: "text" },
       { id: "image", label: "参考图", kind: "image" },
     ],
-    outputs: [{ id: "image", label: "image", kind: "image" }],
+    outputs: [{ id: "image", label: "图片", kind: "image" }],
   },
   ImageToVideo: {
     inputs: [
-      { id: "prompt", label: "prompt", kind: "text" },
-      { id: "image", label: "image", kind: "image" },
+      { id: "prompt", label: "画面描述", kind: "text" },
+      { id: "image", label: "首帧", kind: "image" },
     ],
-    outputs: [{ id: "video", label: "video", kind: "video" }],
+    outputs: [{ id: "video", label: "视频", kind: "video" }],
   },
   VideoTrim: {
-    inputs: [{ id: "video", label: "video", kind: "video" }],
-    outputs: [{ id: "video", label: "video", kind: "video" }],
+    inputs: [{ id: "video", label: "视频", kind: "video" }],
+    outputs: [{ id: "video", label: "视频", kind: "video" }],
   },
   VideoMux: {
-    inputs: [{ id: "video", label: "video", kind: "video" }],
-    outputs: [{ id: "video", label: "video", kind: "video" }],
+    inputs: [{ id: "video", label: "视频", kind: "video" }],
+    outputs: [{ id: "video", label: "视频", kind: "video" }],
   },
   MixAudio: {
     inputs: [
-      { id: "video", label: "video", kind: "video" },
-      { id: "bgm", label: "BGM", kind: "audio" },
+      { id: "video", label: "视频", kind: "video" },
+      { id: "bgm", label: "配乐", kind: "audio" },
       { id: "vo", label: "口播", kind: "audio" },
     ],
-    outputs: [{ id: "video", label: "video", kind: "video" }],
+    outputs: [{ id: "video", label: "视频", kind: "video" }],
   },
   VideoDemux: {
-    inputs: [{ id: "video", label: "video", kind: "video" }],
+    inputs: [{ id: "video", label: "视频", kind: "video" }],
     outputs: [
-      { id: "video", label: "video", kind: "video" },
-      { id: "audio", label: "audio", kind: "audio" },
+      { id: "video", label: "画面", kind: "video" },
+      { id: "audio", label: "声音", kind: "audio" },
     ],
   },
   VideoReversePrompt: {
-    inputs: [{ id: "video", label: "video", kind: "video" }],
+    inputs: [{ id: "video", label: "参考片", kind: "video" }],
     outputs: [
       { id: "text", label: "分析", kind: "text" },
-      { id: "prompt", label: "prompt", kind: "prompt" },
+      { id: "prompt", label: "画面描述", kind: "prompt" },
       { id: "scenes", label: "分镜", kind: "text" },
       { id: "frames", label: "关键帧", kind: "image" },
       { id: "timeline", label: "时间轴", kind: "text" },
     ],
   },
+  ImageCompare: {
+    inputs: [
+      { id: "before", label: "图 A", kind: "image" },
+      { id: "after", label: "图 B", kind: "image" },
+    ],
+    outputs: [{ id: "image", label: "选中图", kind: "image" }],
+  },
+  SpeechToText: {
+    inputs: [
+      { id: "media", label: "视频", kind: "video" },
+      { id: "audio", label: "音频", kind: "audio" },
+    ],
+    outputs: [
+      { id: "text", label: "全文", kind: "text" },
+      { id: "srt", label: "字幕稿", kind: "text" },
+    ],
+  },
   AudioTrim: {
-    inputs: [{ id: "audio", label: "audio", kind: "audio" }],
-    outputs: [{ id: "audio", label: "audio", kind: "audio" }],
+    inputs: [{ id: "audio", label: "音频", kind: "audio" }],
+    outputs: [{ id: "audio", label: "音频", kind: "audio" }],
   },
   TtsSpeak: {
-    inputs: [{ id: "text", label: "text", kind: "text" }],
-    outputs: [{ id: "audio", label: "audio", kind: "audio" }],
+    inputs: [{ id: "text", label: "口播稿", kind: "text" }],
+    outputs: [{ id: "audio", label: "配音", kind: "audio" }],
   },
   SubtitleBurn: {
     inputs: [
-      { id: "video", label: "video", kind: "video" },
-      { id: "text", label: "text", kind: "text" },
+      { id: "video", label: "视频", kind: "video" },
+      { id: "text", label: "字幕", kind: "text" },
     ],
-    outputs: [{ id: "video", label: "video", kind: "video" }],
+    outputs: [{ id: "video", label: "成片", kind: "video" }],
   },
 };
 

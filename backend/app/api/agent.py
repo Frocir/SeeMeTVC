@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user
 from app.models import Channel, User, Workflow
-from app.schemas import AgentChatIn, AgentResumeIn
+from app.schemas import AgentChatIn, AgentResumeIn, AgentSessionPatchIn
 from app.services import agent_runtime as runtime
+from app.services import agent_gates as gates
 from app.services.skills_loader import load_skills
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -82,14 +83,75 @@ async def get_session(
     session = await runtime.get_or_create_session(db, workflow=wf, user=user)
     await db.commit()
     messages = await runtime.list_ui_messages(db, session)
+    return _session_out(session, messages)
+
+
+def _session_out(session, messages: list) -> dict:
     return {
-        "workflow_id": wf.id,
+        "workflow_id": session.workflow_id,
         "skill_id": session.skill_id,
+        "work_mode": runtime.normalize_work_mode(getattr(session, "work_mode", "")),
         "status": session.status,
         "model_id": session.model_id,
         "pending_confirm": runtime.pending_confirm(session),
+        "pending_plan": gates.pending_plan(session),
+        "pending_stage": gates.pending_stage(session),
         "messages": messages,
     }
+
+
+async def _clear_session_messages(
+    db: AsyncSession, *, workflow_id: int, user: User
+) -> dict:
+    wf = await _owned_wf(db, workflow_id, user)
+    session = await runtime.get_or_create_session(db, workflow=wf, user=user)
+    await runtime.clear_session_chat(db, session)
+    session.status = "idle"
+    session.pending_json = ""
+    await db.commit()
+    await db.refresh(session)
+    return _session_out(session, [])
+
+
+@router.patch("/session")
+async def patch_session(
+    workflow_id: int,
+    body: AgentSessionPatchIn,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    if body.clear_chat:
+        return await _clear_session_messages(db, workflow_id=workflow_id, user=user)
+    wf = await _owned_wf(db, workflow_id, user)
+    session = await runtime.get_or_create_session(db, workflow=wf, user=user)
+    if session.status in {"running", "confirm_pending"}:
+        raise HTTPException(status_code=409, detail="生成确认中或 Agent 正在回复，暂不能切换模式")
+    prev_mode = runtime.normalize_work_mode(getattr(session, "work_mode", ""))
+    if body.skill_id is not None:
+        session.skill_id = body.skill_id.strip()
+    if body.work_mode is not None:
+        session.work_mode = runtime.normalize_work_mode(body.work_mode)
+    switched_to_auto = (
+        prev_mode == "plan"
+        and session.work_mode == "auto"
+        and session.status in gates.GATE_STATUSES
+    )
+    await db.commit()
+    await db.refresh(session)
+    messages = await runtime.list_ui_messages(db, session)
+    out = _session_out(session, messages)
+    out["switch_auto"] = switched_to_auto
+    return out
+
+
+@router.post("/session")
+@router.post("/session/clear")
+async def clear_session(
+    workflow_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await _clear_session_messages(db, workflow_id=workflow_id, user=user)
 
 
 @router.post("/chat")
@@ -107,6 +169,7 @@ async def agent_chat(
     ch_id = ch.id
     text = body.text.strip()
     skill_id = body.skill_id
+    work_mode = body.work_mode
     selected = body.selected_node_id
 
     async def gen():
@@ -132,6 +195,7 @@ async def agent_chat(
                         channel=c,
                         text=text,
                         skill_id=skill_id,
+                        work_mode=work_mode,
                         selected_node_id=selected,
                         viewport=viewport,
                         emit=emit,
@@ -172,6 +236,7 @@ async def agent_resume(
     wf_id = wf.id
     ch_id = ch.id
     accept = body.accept
+    action = body.action
     selected = body.selected_node_id
 
     async def gen():
@@ -196,6 +261,7 @@ async def agent_resume(
                         workflow=w,
                         channel=c,
                         accept=accept,
+                        action=action,
                         selected_node_id=selected,
                         viewport=viewport,
                         emit=emit,

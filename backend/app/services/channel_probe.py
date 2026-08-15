@@ -45,14 +45,28 @@ async def probe_channel(channel: Channel) -> ProbeResult:
     kind = (channel.kind or "video").strip().lower()
     provider = (channel.provider or "").strip().lower()
     try:
-        if provider in {"mock", "local-simulate", "simulate"} or llm_svc.is_simulate_channel(channel):
-            return ProbeResult(True, "本地模拟渠道，无需探活", _ms(started))
         if kind == "llm":
             return await _probe_llm(channel, started)
         if kind == "tts":
             return await _probe_tts(channel, started)
         if kind == "image":
-            return ProbeResult(False, "本轮文生图只支持本地模拟，真模型未接入", _ms(started))
+            from app.services import image_gen
+
+            key = (channel.api_key or "").strip()
+            if not key:
+                return ProbeResult(False, "未填写 API Key，无法探活", _ms(started))
+            if image_gen.is_gemini_image_channel(channel):
+                return await _probe_gemini_image(channel, started)
+            if not (channel.base_url or "").strip():
+                return ProbeResult(False, "图像渠道未填写 Base URL", _ms(started))
+            return ProbeResult(True, "图像渠道已配置，运行节点时才会真正出图", _ms(started))
+        if kind == "asr":
+            key = (channel.api_key or "").strip()
+            if not key:
+                return ProbeResult(False, "未填写 API Key，无法探活", _ms(started))
+            if not (channel.base_url or "").strip():
+                return ProbeResult(False, "ASR 渠道未填写 Base URL", _ms(started))
+            return ProbeResult(True, "ASR 已配置，运行节点时才会真正转写", _ms(started))
         if provider in {"agnes", "pavo", "agnes-pavo"}:
             return await _probe_agnes(channel, started)
         if provider in {"ark", "volc", "volcengine", "fal"}:
@@ -197,3 +211,34 @@ async def _probe_agnes(channel: Channel, started: float) -> ProbeResult:
     if resp.status_code >= 400:
         return ProbeResult(False, f"Agnes HTTP {resp.status_code}：{_clip(resp.text)}", _ms(started), url)
     return ProbeResult(True, "Agnes 探活成功", _ms(started), url)
+
+
+async def _probe_gemini_image(channel: Channel, started: float) -> ProbeResult:
+    from app.services import image_gen
+
+    key = (channel.api_key or "").strip()
+    root = image_gen._gemini_root(channel.base_url)
+    url = f"{root}/v1/models"
+    headers = {"Authorization": f"Bearer {key}", "x-goog-api-key": key}
+    try:
+        async with make_async_client(timeout=PROBE_TIMEOUT) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code >= 400:
+                resp = await client.get(f"{root}/v1beta/models", headers=headers, params={"key": key})
+    except Exception as exc:  # noqa: BLE001
+        return ProbeResult(False, f"连不上 Gemini 文生图网关：{exc}", _ms(started), url)
+    if resp.status_code in {401, 403}:
+        return ProbeResult(
+            False,
+            f"网关已连通，但 Key 无效（HTTP {resp.status_code}）。请「改 Key」重新粘贴完整 token。",
+            _ms(started),
+            _clip(resp.text),
+        )
+    if resp.status_code >= 400:
+        return ProbeResult(
+            True,
+            "Gemini 文生图渠道已配置（模型列表接口未开放，出图时才会真正调用）",
+            _ms(started),
+            url,
+        )
+    return ProbeResult(True, "向量引擎 / Gemini 文生图探活成功", _ms(started), url)

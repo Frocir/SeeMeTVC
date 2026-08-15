@@ -30,13 +30,11 @@ import {
 } from "../api";
 import { useAuth } from "../auth";
 import { ensureUpstreamImageUrl } from "../imageUrl";
-import AdminSimulateDialog from "../workflow/AdminSimulateDialog";
 import { mediaNodeTypes } from "../workflow/canvas/MediaNode";
 import { fromApiGraph, toApiGraph } from "../workflow/graph";
 import { dropClosedNarrationEdges, isValidPortConnection } from "../workflow/ports";
 import { inferConnectionHandles, syncWiredData } from "../workflow/sync";
 import {
-  collectDownstreamExitIds,
   exitInputsReady,
   inputFingerprint,
   markDownstreamStale,
@@ -48,7 +46,13 @@ import type { NodeContracts } from "../workflow/nodeContracts";
 import WfInspector from "../workflow/WfInspector";
 import ProjectAssetPanel from "../workflow/ProjectAssetPanel";
 import TvcAgentPanel from "../workflow/TvcAgentPanel";
-import { PALETTE, defaultData } from "../workflow/templates";
+import CanvasTour, {
+  markCanvasGuideDone,
+  shouldStartCanvasGuide,
+  type GuideStepId,
+} from "../workflow/CanvasTour";
+import { PALETTE_GROUPS, defaultData } from "../workflow/templates";
+import { applyDagLayout } from "../workflow/layout";
 
 function ViewportReporter({ onChange }: { onChange: (p: AgentViewport) => void }) {
   const rf = useReactFlow();
@@ -67,9 +71,21 @@ function ViewportReporter({ onChange }: { onChange: (p: AgentViewport) => void }
   return null;
 }
 
+function FitViewOnToken({ token }: { token: number }) {
+  const rf = useReactFlow();
+  useEffect(() => {
+    if (!token) return;
+    const id = window.setTimeout(() => {
+      void rf.fitView({ padding: 0.2, maxZoom: 1, duration: 280 });
+    }, 40);
+    return () => window.clearTimeout(id);
+  }, [token, rf]);
+  return null;
+}
+
 function applyMediaFromOutput(data: WfData, output?: Record<string, unknown> | null): WfData {
   if (!output) return data;
-  const next = { ...data, runOutput: output, stale: false, simulated: false };
+  const next = { ...data, runOutput: output, stale: false };
   const clips = output.clips;
   if (Array.isArray(clips) && typeof clips[0] === "string") {
     next.clip_url = clips[0] as string;
@@ -100,6 +116,14 @@ function applyMediaFromOutput(data: WfData, output?: Record<string, unknown> | n
     next.narration = output.narration;
   }
   if (typeof output.audio_url === "string") next.audio_url = output.audio_url;
+  if (Array.isArray(output.scenes)) next.scenes = output.scenes as WfData["scenes"];
+  if (Array.isArray(output.frames)) next.frames = output.frames as WfData["frames"];
+  if (output.timeline !== undefined) next.timeline = output.timeline as WfData["timeline"];
+  if (typeof output.srt === "string") next.srt = output.srt;
+  if (Array.isArray(output.segments)) next.segments = output.segments as WfData["segments"];
+  if (typeof output.text === "string" && normalizeNodeType(data.nodeType) === "SpeechToText") {
+    next.text = output.text;
+  }
   return next;
 }
 
@@ -113,6 +137,7 @@ export default function WorkflowCanvasPage() {
   const [llmModels, setLlmModels] = useState<ModelOption[]>([]);
   const [ttsModels, setTtsModels] = useState<ModelOption[]>([]);
   const [imageModels, setImageModels] = useState<ModelOption[]>([]);
+  const [asrModels, setAsrModels] = useState<ModelOption[]>([]);
   const [contracts, setContracts] = useState<NodeContracts | null>(null);
   const [name, setName] = useState("未命名项目");
   const [workflowId, setWorkflowId] = useState<number | null>(null);
@@ -123,23 +148,17 @@ export default function WorkflowCanvasPage() {
   const [flowKey, setFlowKey] = useState(0);
   const [leftOpen, setLeftOpen] = useState(true);
   const [leftTab, setLeftTab] = useState<"agent" | "nodes" | "assets">("agent");
+  const [guideOpen, setGuideOpen] = useState(false);
   const [assetTick, setAssetTick] = useState(0);
   const [fullscreen, setFullscreen] = useState<{ url: string; kind: "image" | "video" | "audio" } | null>(
     null,
   );
-  const [simulate, setSimulate] = useState<{
-    nodeId: string;
-    label: string;
-    message: string;
-  } | null>(null);
   const idSeq = useRef(1);
   const fingerprints = useRef<Record<string, string>>({});
   const autoArmed = useRef(false);
   const runningRef = useRef(false);
   /** Suppress auto-queue after manual/template runs so we don't double-hit Agnes. */
   const suppressAutoUntil = useRef(0);
-  const lastSimulatedRunId = useRef<number | null>(null);
-
   const modelId = models[0]?.model_id || "";
   const llmModelId = llmModels[0]?.model_id || "";
   const ttsModelId = ttsModels[0]?.model_id || "tts-1";
@@ -148,6 +167,7 @@ export default function WorkflowCanvasPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [agentLocked, setAgentLocked] = useState(false);
   const [viewport, setViewport] = useState<AgentViewport>({ x: 400, y: 280 });
+  const [layoutTick, setLayoutTick] = useState(0);
   const lastSavedRef = useRef("");
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
@@ -165,14 +185,16 @@ export default function WorkflowCanvasPage() {
       api<ModelOption[]>("/api/models?kind=llm"),
       api<ModelOption[]>("/api/models?kind=tts"),
       api<ModelOption[]>("/api/models?kind=image"),
+      api<ModelOption[]>("/api/models?kind=asr"),
       api<Workflow>(`/api/workflows/${routeId}`),
       api<NodeContracts>("/api/agent/node-contracts"),
     ])
-      .then(([m, llm, tts, imgs, wf, cons]) => {
+      .then(([m, llm, tts, imgs, asr, wf, cons]) => {
         setModels(m);
         setLlmModels(llm);
         setTtsModels(tts);
         setImageModels(imgs);
+        setAsrModels(asr);
         setContracts(cons);
         const mid = m[0]?.model_id || "";
         setWorkflowId(wf.id);
@@ -189,6 +211,9 @@ export default function WorkflowCanvasPage() {
           }
         }
         autoArmed.current = true;
+        if (shouldStartCanvasGuide()) {
+          window.setTimeout(() => setGuideOpen(true), 480);
+        }
       })
       .catch(() => navigate("/", { replace: true }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -208,6 +233,11 @@ export default function WorkflowCanvasPage() {
           onLabelChange: (label: string) => {
             setNodes((nds) =>
               nds.map((x) => (x.id === n.id ? { ...x, data: { ...x.data, label } } : x)),
+            );
+          },
+          onPatch: (patch: Partial<WfData>) => {
+            setNodes((nds) =>
+              nds.map((x) => (x.id === n.id ? { ...x, data: { ...x.data, ...patch } } : x)),
             );
           },
           onOpenFullscreen: (url: string, kind: "image" | "video" | "audio") => setFullscreen({ url, kind }),
@@ -289,25 +319,6 @@ export default function WorkflowCanvasPage() {
       });
       return syncWiredData(applied, edges);
     });
-
-    if (
-      isAdmin &&
-      isTerminalRun(r.status) &&
-      (r.status === "failed" || r.status === "refunded") &&
-      lastSimulatedRunId.current !== r.id
-    ) {
-      const failedId =
-        Object.entries(r.node_states || {}).find(([, st]) => st.status === "failed")?.[0] || null;
-      if (failedId) {
-        lastSimulatedRunId.current = r.id;
-        const node = nodes.find((n) => n.id === failedId);
-        setSimulate({
-          nodeId: failedId,
-          label: node?.data.label || failedId,
-          message: r.error_message || node?.data.runError || "生成失败",
-        });
-      }
-    }
   }
 
   async function prepareGraph(targetIds?: string[]) {
@@ -346,6 +357,7 @@ export default function WorkflowCanvasPage() {
       llmReady: llmModels.length > 0,
       ttsReady: ttsModels.length > 0,
       imageReady: imageModels.length > 0,
+      asrReady: asrModels.length > 0,
       targetIds,
       contracts,
     });
@@ -360,8 +372,7 @@ export default function WorkflowCanvasPage() {
     }
     setBusy(true);
     setError("");
-    setSimulate(null);
-    setQueueNote(note || (targetIds ? `队列：运行 ${targetIds.length} 个节点` : "队列：一键跑"));
+    setQueueNote(note || (targetIds ? `正在生成 ${targetIds.length} 步` : "正在生成整条流程"));
     runningRef.current = true;
     // Full template / manual runs: pause auto-queue so it cannot open a 2nd Agnes poller
     suppressAutoUntil.current = Date.now() + (targetIds ? 15_000 : 120_000);
@@ -382,17 +393,6 @@ export default function WorkflowCanvasPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "执行失败");
       runningRef.current = false;
-      if (isAdmin) {
-        const sid = targetIds?.[0] || selectedId;
-        if (sid) {
-          const node = nodes.find((n) => n.id === sid);
-          setSimulate({
-            nodeId: sid,
-            label: node?.data.label || sid,
-            message: e instanceof Error ? e.message : "执行失败",
-          });
-        }
-      }
     } finally {
       setBusy(false);
     }
@@ -436,11 +436,25 @@ export default function WorkflowCanvasPage() {
       lastSavedRef.current = JSON.stringify(toApiGraph(g.nodes, g.edges));
       setSelectedId(out.final_node_id || out.created_node_ids[0] || selectedId);
       setAssetTick((n) => n + 1);
-      setQueueNote(`已从分镜生成 ${out.created_node_ids.length} 个节点`);
+      setQueueNote(`已按分镜摆好 ${out.created_node_ids.length} 个步骤`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "展开分镜失败");
+      setError(e instanceof Error ? e.message : "按分镜摆到画布失败");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function layoutAll() {
+    if (busy || agentLocked || nodes.length === 0) return;
+    const next = applyDagLayout(nodes, edges);
+    setNodes(next);
+    nodesRef.current = next;
+    setLayoutTick((t) => t + 1);
+    setQueueNote("已重新排版");
+    try {
+      await saveDraft({ silent: true });
+    } catch {
+      /* saveDraft already surfaces the error */
     }
   }
 
@@ -525,52 +539,9 @@ export default function WorkflowCanvasPage() {
     for (const id of due) {
       fingerprints.current[id] = inputFingerprint(id, nodes, edges);
     }
-    void startRun(due, `自动队列：${due.join(", ")}`);
+        void startRun(due, `接着生成 ${due.length} 步`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes, edges, agentLocked]);
-
-  function applySimulate(url: string, continueDownstream: boolean) {
-    if (!simulate) return;
-    const nid = simulate.nodeId;
-    const isVid = /\.(mp4|webm|mov)(\?|$)/i.test(url) || url.includes("/uploads/");
-    setNodes((ns) =>
-      ns.map((n) => {
-        if (n.id !== nid) return n;
-        const nt = normalizeNodeType(n.data.nodeType);
-        if (nt === "ImageAsset" || (!isVid && nt !== "ImageToVideo" && nt !== "VideoMux" && nt !== "VideoTrim" && nt !== "VideoAsset")) {
-          return {
-            ...n,
-            data: {
-              ...n.data,
-              image_url: url,
-              runStatus: "succeeded",
-              runError: undefined,
-              stale: false,
-              simulated: true,
-            },
-          };
-        }
-        return {
-          ...n,
-          data: {
-            ...n.data,
-            clip_url: url,
-            result_url: url,
-            preview_url: url,
-            runStatus: "succeeded",
-            runError: undefined,
-            stale: false,
-            simulated: true,
-          },
-        };
-      }),
-    );
-    setSimulate(null);
-    if (continueDownstream) {
-      const next = collectDownstreamExitIds(nid, nodes, edges);
-      if (next.length) void startRun(next, "模拟填入后继续下游");
-    }
-  }
 
   const runBlock = useMemo(
     () =>
@@ -579,10 +550,26 @@ export default function WorkflowCanvasPage() {
         llmReady: llmModels.length > 0,
         ttsReady: ttsModels.length > 0,
         imageReady: imageModels.length > 0,
+        asrReady: asrModels.length > 0,
         contracts,
       }),
-    [nodes, edges, modelId, llmModels.length, ttsModels.length, imageModels.length, contracts],
+    [nodes, edges, modelId, llmModels.length, ttsModels.length, imageModels.length, asrModels.length, contracts],
   );
+
+  const prepareGuide = useCallback((id: GuideStepId) => {
+    setLeftOpen(true);
+    if (id === "palette" || id === "canvas" || id === "inspector") setLeftTab("nodes");
+    if (id === "agent") setLeftTab("agent");
+    if (id === "inspector") {
+      const first = nodesRef.current[0]?.id;
+      if (first) setSelectedId((cur) => cur || first);
+    }
+  }, []);
+
+  const closeGuide = useCallback(() => {
+    markCanvasGuideDone();
+    setGuideOpen(false);
+  }, []);
 
   const selectedCanGenerate =
     !!selected && isGeneratableNodeType(selected.data.nodeType);
@@ -590,7 +577,7 @@ export default function WorkflowCanvasPage() {
   return (
     <div className="canvas-app">
     <div className={`cv-stage ${leftOpen ? "left-open" : "left-collapsed"} ${selected ? "right-open" : ""}`}>
-      <section className="cv-canvas">
+      <section className="cv-canvas" data-tour="canvas">
         <ReactFlow
           key={flowKey}
           nodes={displayNodes}
@@ -619,6 +606,7 @@ export default function WorkflowCanvasPage() {
           className="cv-flow"
         >
           <ViewportReporter onChange={onViewport} />
+          <FitViewOnToken token={layoutTick} />
           <Background
             id="cv-grid"
             variant={BackgroundVariant.Dots}
@@ -654,7 +642,7 @@ export default function WorkflowCanvasPage() {
         <div className="cv-topbar-queue">
           {run && isActiveRun(run.status)
             ? STATUS_LABEL[run.status] || run.status
-            : queueNote || "队列空闲"}
+            : queueNote || "空闲"}
         </div>
         <div className="cv-topbar-actions">
           {run && isActiveRun(run.status) && (
@@ -670,12 +658,30 @@ export default function WorkflowCanvasPage() {
           </button>
           <button
             type="button"
+            className="cv-chip-btn"
+            disabled={busy || agentLocked || nodes.length === 0}
+            title="按连线关系重新排列全部节点"
+            onClick={() => void layoutAll()}
+          >
+            一键排版
+          </button>
+          <button
+            type="button"
+            className="cv-chip-btn"
+            onClick={() => setGuideOpen(true)}
+            title="新手引导"
+          >
+            引导
+          </button>
+          <button
+            type="button"
             className="cv-chip-btn primary"
             disabled={busy || (!!run && isActiveRun(run.status))}
             title={runBlock || undefined}
-            onClick={() => void startRun(undefined, "一键跑")}
+            data-tour="run"
+            onClick={() => void startRun(undefined, "正在生成整条流程")}
           >
-            一键跑
+            开始生成
           </button>
         </div>
       </div>
@@ -699,43 +705,32 @@ export default function WorkflowCanvasPage() {
       <aside className={`cv-dock ${leftOpen ? "is-open" : "is-collapsed"}`}>
         {leftOpen ? (
           <>
+            <div className="cv-dock-body">
             <div className="cv-dock-head">
-              <div>
-                <p className="eyebrow">项目</p>
-                <strong>{leftTab === "agent" ? "TVC Agent" : leftTab === "assets" ? "素材" : "节点"}</strong>
+              <div className="cv-dock-tabs">
+                <button
+                  type="button"
+                  className={leftTab === "agent" ? "active" : ""}
+                  data-tour="agent-tab"
+                  onClick={() => setLeftTab("agent")}
+                >
+                  TVC Agent
+                </button>
+                <button
+                  type="button"
+                  className={leftTab === "nodes" ? "active" : ""}
+                  onClick={() => setLeftTab("nodes")}
+                >
+                  工具
+                </button>
+                <button
+                  type="button"
+                  className={leftTab === "assets" ? "active" : ""}
+                  onClick={() => setLeftTab("assets")}
+                >
+                  素材
+                </button>
               </div>
-              <button
-                type="button"
-                className="cv-panel-toggle"
-                aria-label="收起左侧工具栏"
-                title="收起"
-                onClick={() => setLeftOpen(false)}
-              >
-                ‹
-              </button>
-            </div>
-            <div className="cv-dock-tabs">
-              <button
-                type="button"
-                className={leftTab === "agent" ? "active" : ""}
-                onClick={() => setLeftTab("agent")}
-              >
-                TVC Agent
-              </button>
-              <button
-                type="button"
-                className={leftTab === "nodes" ? "active" : ""}
-                onClick={() => setLeftTab("nodes")}
-              >
-                节点
-              </button>
-              <button
-                type="button"
-                className={leftTab === "assets" ? "active" : ""}
-                onClick={() => setLeftTab("assets")}
-              >
-                素材
-              </button>
             </div>
             {leftTab === "agent" ? (
               <TvcAgentPanel
@@ -767,25 +762,31 @@ export default function WorkflowCanvasPage() {
             ) : (
             <div className="cv-dock-scroll">
               {leftTab === "nodes" ? (
-                <div className="cv-section">
+                <div className="cv-section" data-tour="palette">
                   <div className="cv-palette">
-                    {PALETTE.map((p) => (
-                      <button
-                        key={p.type}
-                        type="button"
-                        className="cv-add"
-                        disabled={agentLocked}
-                        onClick={() => {
-                          const extra: Partial<WfData> = {};
-                          if (p.type === "LlmText") extra.model_id = llmModelId;
-                          if (p.type === "TextToImage") extra.model_id = imageModels[0]?.model_id;
-                          if (p.type === "TtsSpeak") extra.model_id = ttsModelId;
-                          addNode(p.type, extra);
-                        }}
-                      >
-                        <strong>{p.label}</strong>
-                        <span>{p.hint}</span>
-                      </button>
+                    {PALETTE_GROUPS.map((group) => (
+                      <div key={group.title} className="cv-palette-group">
+                        <p className="cv-palette-title">{group.title}</p>
+                        {group.items.map((p) => (
+                          <button
+                            key={p.type}
+                            type="button"
+                            className="cv-add"
+                            disabled={agentLocked}
+                            onClick={() => {
+                              const extra: Partial<WfData> = {};
+                              if (p.type === "LlmText") extra.model_id = llmModelId;
+                              if (p.type === "TextToImage") extra.model_id = imageModels[0]?.model_id;
+                              if (p.type === "TtsSpeak") extra.model_id = ttsModelId;
+                              if (p.type === "SpeechToText") extra.model_id = asrModels[0]?.model_id;
+                              addNode(p.type, extra);
+                            }}
+                          >
+                            <strong>{p.label}</strong>
+                            <span>{p.hint}</span>
+                          </button>
+                        ))}
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -808,6 +809,19 @@ export default function WorkflowCanvasPage() {
                     }
                     setLeftTab("nodes");
                   }}
+                  onApplyGraph={(graph, nodeId) => {
+                    const mid = models[0]?.model_id || modelId;
+                    const g = fromApiGraph(
+                      graph as { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> },
+                      mid,
+                    );
+                    setNodes(g.nodes);
+                    setEdges(g.edges);
+                    lastSavedRef.current = JSON.stringify(toApiGraph(g.nodes, g.edges));
+                    if (nodeId) setSelectedId(nodeId);
+                    setAssetTick((n) => n + 1);
+                    setLeftTab("nodes");
+                  }}
                 />
               ) : (
                 <p className="muted">项目尚未打开</p>
@@ -824,6 +838,17 @@ export default function WorkflowCanvasPage() {
               )}
             </div>
             )}
+            </div>
+            <button
+              type="button"
+              className="cv-rail-collapse"
+              aria-label="收起左侧工具栏"
+              title="收起"
+              onClick={() => setLeftOpen(false)}
+            >
+              <span className="cv-rail-expand-chevron">‹</span>
+              <span className="cv-rail-expand-text">收起</span>
+            </button>
           </>
         ) : (
           <button
@@ -840,10 +865,10 @@ export default function WorkflowCanvasPage() {
       </aside>
 
       {selected && (
-        <div className={`cv-inspector is-open${agentLocked ? " is-locked" : ""}`}>
+        <div className={`cv-inspector is-open${agentLocked ? " is-locked" : ""}`} data-tour="inspector">
           <div className="cv-dock-head">
             <div>
-              <p className="eyebrow">详细信息</p>
+              <p className="eyebrow">这一步</p>
               <strong>{selected.data.label}</strong>
             </div>
             <button
@@ -863,13 +888,14 @@ export default function WorkflowCanvasPage() {
               llmModels={llmModels}
               ttsModels={ttsModels}
               imageModels={imageModels}
+              asrModels={asrModels}
               modelId={modelId}
               onChange={agentLocked ? () => undefined : updateSelected}
               onGenerate={
                 selectedCanGenerate && !agentLocked
                   ? () => {
                       if (!selectedId) return;
-                      void startRun([selectedId], "生成选中节点");
+                      void startRun([selectedId], "正在生成这一步");
                     }
                   : undefined
               }
@@ -908,15 +934,8 @@ export default function WorkflowCanvasPage() {
           </div>
         </div>
       )}
-
-      <AdminSimulateDialog
-        open={!!simulate}
-        nodeLabel={simulate?.label || ""}
-        errorMessage={simulate?.message || ""}
-        onClose={() => setSimulate(null)}
-        onApply={applySimulate}
-      />
     </div>
+      <CanvasTour open={guideOpen} onClose={closeGuide} onStep={prepareGuide} />
     </div>
   );
 }

@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -54,8 +55,8 @@ class Channel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
-    provider: Mapped[str] = mapped_column(String(64), default="ark")  # ark | mock | agnes | openai | anthropic
-    kind: Mapped[str] = mapped_column(String(16), default="video", index=True)  # video | llm | tts | image
+    provider: Mapped[str] = mapped_column(String(64), default="ark")  # ark | agnes | openai | anthropic | gemini
+    kind: Mapped[str] = mapped_column(String(16), default="video", index=True)  # video | llm | tts | image | asr
     base_url: Mapped[str] = mapped_column(String(512), default="")
     api_key: Mapped[str] = mapped_column(Text, default="")
     # Model id exposed to users, e.g. seedance-lite / gpt-4o / tts-1
@@ -67,6 +68,8 @@ class Channel(Base):
     priority: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     remark: Mapped[str] = mapped_column(String(255), default="")
+    # JSON text: {"capabilities": {...}} overlays provider defaults.
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -174,6 +177,47 @@ class ProjectAsset(Base):
     workflow: Mapped["Workflow"] = relationship(back_populates="assets")
 
 
+class AssetVersion(Base):
+    """Generated media/text history per project. Deleting a row does not delete files."""
+
+    __tablename__ = "asset_versions"
+    __table_args__ = (
+        Index("ix_asset_versions_wf_created", "workflow_id", "created_at"),
+        Index("ix_asset_versions_user_kind", "user_id", "kind"),
+        Index("ix_asset_versions_wf_fav", "workflow_id", "favorite"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    node_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    node_type: Mapped[str] = mapped_column(String(64), default="", index=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # image | video | audio | text | prompt
+    url: Mapped[str] = mapped_column(Text, default="")
+    thumbnail_url: Mapped[str] = mapped_column(Text, default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    model_provider: Mapped[str] = mapped_column(String(64), default="")
+    model_name: Mapped[str] = mapped_column(String(120), default="")
+    channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    params_json: Mapped[str] = mapped_column(Text, default="{}")
+    cost: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(String(32), default="succeeded", index=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    favorite: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    workflow: Mapped["Workflow"] = relationship()
+
+
 class BalanceEntry(Base):
     """Append-only row for every User.balance change."""
 
@@ -203,6 +247,7 @@ class AgentSession(Base):
     )
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     skill_id: Mapped[str] = mapped_column(String(64), default="")
+    work_mode: Mapped[str] = mapped_column(String(16), default="plan")
     summary: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="idle", index=True)
     pending_json: Mapped[str] = mapped_column(Text, default="")

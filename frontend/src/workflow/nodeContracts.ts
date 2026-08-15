@@ -315,16 +315,17 @@ export function cannotRunReason(
     llmReady?: boolean;
     ttsReady?: boolean;
     imageReady?: boolean;
+    asrReady?: boolean;
     targetIds?: string[];
     contracts?: NodeContracts | null;
   } = {},
 ): string | null {
   const contracts = opts.contracts;
   if (!contracts?.nodes) {
-    return "节点规约未加载，请刷新页面。";
+    return "页面还没准备好，请刷新后再试。";
   }
   if (!nodes.length) {
-    return "画布上没有节点，无法生成。请从左侧「节点」添加「图生视频」等节点后再一键跑。";
+    return "画布上还没有步骤。请从左侧「工具」加上「出视频」等，再点「开始生成」。";
   }
   const targets = opts.targetIds?.filter(Boolean) || [];
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -332,7 +333,7 @@ export function cannotRunReason(
   const fullRun = !targets.length;
   if (targets.length) {
     if (targets.some((id) => !byId.has(id))) {
-      return "选中的节点已不在画布上，无法生成。";
+      return "选中的步骤已不在画布上，无法生成。";
     }
   } else if (!nodes.some((n) => isExit(contracts, n.data.nodeType))) {
     const extras = nodes
@@ -340,16 +341,16 @@ export function cannotRunReason(
       .map((n) => n.data.label || n.id);
     if (extras.length) {
       return (
-        `没有可出片的节点，无法一键跑。画布上的「${extras.slice(0, 3).join("、")}」需要接到「图生视频」「文生图」「混音」或「字幕」，` +
-        "或选中该节点单独点「生成」。"
+        `还没有能出片的步骤，无法开始生成。画布上的「${extras.slice(0, 3).join("、")}」需要接到「出视频」「出图」「混音」或「加字幕」，` +
+        "或选中该步骤单独点「生成这一步」。"
       );
     }
-    return "没有可出片的节点。请添加「图生视频」「文生图」「混音」或「字幕」后再一键跑。";
+    return "还没有能出片的步骤。请加上「出视频」「出图」「混音」或「加字幕」，再点「开始生成」。";
   }
 
   const { down, up } = adj(new Set(ids), edges);
   if (hasCycle(ids, down)) {
-    return "节点图存在环或无效依赖，无法执行。";
+    return "连线绕成了圈，没法按顺序生成。请检查连线。";
   }
 
   if (fullRun) {
@@ -375,14 +376,14 @@ export function cannotRunReason(
         return `「${n?.data.label || pick}」`;
       });
       const extra = islands.length > 4 ? " 等" : "";
-      return `画布上有 ${islands.length} 条互不相连的工作流（${names.join("、")}${extra}）。一键跑只能跑一条完整链路，请删掉多余节点或把它们连起来。`;
+      return `画布上有 ${islands.length} 组互不相连的步骤（${names.join("、")}${extra}）。「开始生成」一次只能跑一条完整链路，请删掉多余的，或把它们连起来。`;
     }
     const exits = new Set(nodes.filter((n) => isExit(contracts, n.data.nodeType)).map((n) => n.id));
     for (const n of nodes) {
       if (specOf(contracts, n.data.nodeType).orphan !== "full_run_forbid") continue;
       if (isExit(contracts, n.data.nodeType)) continue;
       if (!canReach(n.id, exits, down)) {
-        return `「${n.data.label || n.id}」没有连接到任何出片节点，工作流不完整。请把它接到「图生视频」等节点，或删掉后再一键跑。`;
+        return `「${n.data.label || n.id}」没有接到能出片的步骤。请把它连到「出视频」等，或删掉后再点「开始生成」。`;
       }
     }
   }
@@ -390,7 +391,7 @@ export function cannotRunReason(
   if (targets.length) {
     const blocked = nodes.find((n) => targets.includes(n.id) && upstreamFailed(n.id, nodes, edges, contracts));
     if (blocked) {
-      return `「${blocked.data.label || blocked.id}」的上游生产节点已失败，请先重跑上游，或点「一键跑」整链重试。`;
+      return `「${blocked.data.label || blocked.id}」前面的步骤失败了，请先重跑前面的，或点「开始生成」整条重来。`;
     }
   }
 
@@ -425,10 +426,11 @@ export function cannotRunReason(
 
   const pool = targets.length ? nodes.filter((n) => targets.includes(n.id)) : nodes;
   const msgs: Record<string, string> = {
-    video: "暂无可用视频模型，无法图生视频。请超管启用渠道后再一键跑。",
-    llm: "暂无可用 LLM 渠道。请超管启用「本地 LLM 模拟」，或填写真模型 Key 后再一键跑。",
-    tts: "暂无可用 TTS 渠道。请确认 aisrv 已启动，且超管已启用 Edge TTS 渠道。",
-    image: "暂无可用文生图渠道。请超管启用「本地文生图模拟」后再一键跑。",
+    video: "还没有可用的视频模型，没法出视频。请超管启用渠道后再点「开始生成」。",
+    llm: "还没有可用的写作模型。请超管填写并启用对话模型。",
+    tts: "还没有可用的配音渠道。请确认配音服务已启动，且超管已启用。",
+    image: "还没有可用的出图渠道。请超管填写并启用图像渠道。",
+    asr: "还没有可用的听写渠道。请超管填写并启用语音识别。",
   };
   for (const n of pool) {
     const ch = specOf(contracts, n.data.nodeType).channel;
@@ -436,6 +438,7 @@ export function cannotRunReason(
     if (ch === "llm" && opts.llmReady === false) return msgs.llm;
     if (ch === "tts" && opts.ttsReady === false) return msgs.tts;
     if (ch === "image" && opts.imageReady === false) return msgs.image;
+    if (ch === "asr" && opts.asrReady === false) return msgs.asr;
   }
   return null;
 }

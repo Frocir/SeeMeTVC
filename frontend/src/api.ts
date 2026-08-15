@@ -53,6 +53,30 @@ export type Me = {
   balance_unit: string;
 };
 
+export type ModelCapabilities = {
+  kind?: string;
+  vision?: boolean;
+  supports_text_to_image?: boolean;
+  supports_image_to_image?: boolean;
+  supports_multi_reference?: boolean;
+  supports_negative_prompt?: boolean;
+  supports_seed?: boolean;
+  supports_batch?: boolean;
+  supports_image_strength?: boolean;
+  supports_text_to_video?: boolean;
+  supports_image_to_video?: boolean;
+  supports_first_last_frame?: boolean;
+  supports_style_reference?: boolean;
+  supports_character_reference?: boolean;
+  supports_product_reference?: boolean;
+  supports_transcription?: boolean;
+  sizes?: string[];
+  aspects?: string[];
+  duration_min?: number;
+  duration_max?: number;
+  provider_params?: Record<string, unknown>;
+};
+
 export type ModelOption = {
   model_id: string;
   cost_per_second: number;
@@ -63,6 +87,7 @@ export type ModelOption = {
   duration_max?: number;
   supports_audio?: boolean;
   supports_image?: boolean;
+  capabilities?: ModelCapabilities;
 };
 
 export type Job = {
@@ -116,6 +141,8 @@ export type Channel = {
   enabled: boolean;
   remark: string;
   api_key_masked: string;
+  config_json?: Record<string, unknown>;
+  capabilities?: ModelCapabilities;
 };
 
 export type ChannelProbe = {
@@ -180,6 +207,69 @@ export type ProjectAsset = {
   filename: string;
   created_at: string;
 };
+
+export type AssetVersion = {
+  id: number;
+  workflow_id: number;
+  run_id?: number | null;
+  node_id?: string;
+  node_type?: string;
+  kind: "image" | "video" | "audio" | "text" | "prompt" | string;
+  url: string;
+  thumbnail_url?: string;
+  text?: string;
+  prompt?: string;
+  model_name?: string;
+  cost?: number;
+  status?: string;
+  error_message?: string;
+  favorite?: boolean;
+  created_at: string;
+};
+
+export type AssetVersionList = {
+  items: AssetVersion[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export async function listAssetVersions(
+  workflowId: number,
+  opts: { kind?: string; favorite?: boolean; limit?: number; offset?: number } = {},
+): Promise<AssetVersionList> {
+  const q = new URLSearchParams();
+  if (opts.kind) q.set("kind", opts.kind);
+  if (opts.favorite) q.set("favorite", "true");
+  if (opts.limit != null) q.set("limit", String(opts.limit));
+  if (opts.offset != null) q.set("offset", String(opts.offset));
+  const suffix = q.toString() ? `?${q.toString()}` : "";
+  return api<AssetVersionList>(`/api/workflows/${workflowId}/asset-versions${suffix}`);
+}
+
+export async function patchAssetVersion(id: number, body: { favorite?: boolean }): Promise<AssetVersion> {
+  return api<AssetVersion>(`/api/asset-versions/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function bulkDeleteAssetVersions(ids: number[]): Promise<{ deleted: number }> {
+  return api<{ deleted: number }>("/api/asset-versions/bulk-delete", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export async function sendAssetVersionToCanvas(
+  id: number,
+  viewport?: { x?: number; y?: number },
+): Promise<{ node_id: string; node_type: string; graph: { nodes?: unknown[]; edges?: unknown[] } }> {
+  return api(`/api/asset-versions/${id}/send-to-canvas`, {
+    method: "POST",
+    body: JSON.stringify(viewport || {}),
+  });
+}
 
 export type UploadOut = {
   url: string;
@@ -468,13 +558,28 @@ export type AgentConfirm = {
   model_id: string;
   estimated_cost: number;
   unit?: string;
+  message?: string;
+};
+export type AgentPlanStage = { id: string; title: string; points: string[] };
+export type AgentPlan = { title: string; rebuild?: boolean; stages: AgentPlanStage[] };
+export type AgentStageCard = {
+  stage: string;
+  title: string;
+  start_label: string;
+  points: string[];
+  plan: AgentPlan;
+  completed?: string[];
 };
 export type AgentSessionOut = {
   workflow_id: number;
   skill_id: string;
+  work_mode: "auto" | "plan" | string;
   status: string;
   model_id: string;
   pending_confirm: AgentConfirm | null;
+  pending_plan?: AgentPlan | null;
+  pending_stage?: AgentStageCard | null;
+  switch_auto?: boolean;
   messages: AgentUiMsg[];
 };
 export type AgentGraph = { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> };
@@ -485,6 +590,9 @@ export type AgentStreamHandlers = {
   onTool?: (ev: { name: string; status: string; detail: string }) => void;
   onGraph?: (graph: AgentGraph) => void;
   onConfirm?: (c: AgentConfirm) => void;
+  onPlan?: (p: AgentPlan) => void;
+  onStage?: (s: AgentStageCard) => void;
+  onChatCleared?: () => void;
   onError?: (detail: string) => void;
   onDone?: (status: string) => void;
 };
@@ -543,6 +651,9 @@ async function readAgentSse(path: string, body: unknown, handlers: AgentStreamHa
         });
       } else if (event === "graph") handlers.onGraph?.(data as AgentGraph);
       else if (event === "confirm_required") handlers.onConfirm?.(data as AgentConfirm);
+      else if (event === "plan_required") handlers.onPlan?.(data as AgentPlan);
+      else if (event === "stage_required") handlers.onStage?.(data as AgentStageCard);
+      else if (event === "chat_cleared") handlers.onChatCleared?.();
       else if (event === "error") handlers.onError?.(String(data.detail || "Agent 出错"));
       else if (event === "done") handlers.onDone?.(String(data.status || "idle"));
     }
@@ -554,6 +665,7 @@ export function streamAgentChat(
     workflow_id: number;
     model_id?: string;
     skill_id?: string;
+    work_mode?: string;
     text: string;
     selected_node_id?: string;
     viewport?: AgentViewport;
@@ -567,7 +679,8 @@ export function streamAgentChat(
 export function streamAgentResume(
   body: {
     workflow_id: number;
-    accept: boolean;
+    accept?: boolean;
+    action?: string;
     selected_node_id?: string;
     viewport?: AgentViewport;
   },
@@ -575,4 +688,21 @@ export function streamAgentResume(
   signal?: AbortSignal,
 ) {
   return readAgentSse("/api/agent/resume", body, handlers, signal);
+}
+
+export function patchAgentSession(
+  workflowId: number,
+  body: { skill_id?: string; work_mode?: string; clear_chat?: boolean },
+) {
+  return api<AgentSessionOut>(`/api/agent/session?workflow_id=${workflowId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function clearAgentChat(workflowId: number) {
+  return api<AgentSessionOut>(`/api/agent/session/clear?workflow_id=${workflowId}`, {
+    method: "POST",
+    body: "{}",
+  });
 }

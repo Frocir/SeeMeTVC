@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import admin_users, agent, auth, channels, ledger, uploads, videos, workflows
+from app.api import admin_users, agent, asset_versions, auth, channels, ledger, uploads, videos, workflows
 from app.api.uploads import uploads_root
 from app.bootstrap import ensure_bootstrap_data
 from app.config import get_settings
@@ -12,17 +12,11 @@ from app.db import Base, SessionLocal, engine
 from app.services.ledger import ensure_opening_balances
 from app.services.migrate_projects import apply_schema_updates, migrate_project_space
 from app.services.project_assets import fill_empty_covers
-from app.services import media_ops
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     uploads_root()
-    try:
-        await media_ops.ensure_demo_bgm()
-        await media_ops.ensure_demo_t2i()
-    except Exception:  # noqa: BLE001
-        pass
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(apply_schema_updates)
@@ -50,6 +44,7 @@ app.include_router(agent.router, prefix="/api")
 app.include_router(channels.router, prefix="/api")
 app.include_router(videos.router, prefix="/api")
 app.include_router(workflows.router, prefix="/api")
+app.include_router(asset_versions.router, prefix="/api")
 app.include_router(uploads.router, prefix="/api")
 app.include_router(admin_users.router, prefix="/api")
 app.include_router(ledger.router, prefix="/api")

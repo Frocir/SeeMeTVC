@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import ReferenceImageField from "../components/ReferenceImageField";
-import { uploadAudio, uploadVideo, type ModelOption } from "../api";
+import { uploadAudio, uploadVideo, type ModelCapabilities, type ModelOption } from "../api";
 import { PROMPT_SNIPPETS, type PromptBucket } from "./prompts";
 import { LLM_SYSTEM, TTS_VOICES, shotSystem } from "./templates";
 import { isLlmNodeType, normalizeNodeType, type WfData } from "./types";
@@ -11,6 +11,7 @@ type Props = {
   llmModels?: ModelOption[];
   ttsModels?: ModelOption[];
   imageModels?: ModelOption[];
+  asrModels?: ModelOption[];
   modelId: string;
   onChange: (patch: Partial<WfData>) => void;
   onDelete: () => void;
@@ -46,6 +47,22 @@ function appendText(current: string | undefined, text: string): string {
   return `${cur}，${text}`;
 }
 
+async function copyText(value: string): Promise<void> {
+  const text = (value || "").trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    /* ignore */
+  }
+}
+
+function capsOf(models: ModelOption[], modelId?: string): ModelCapabilities {
+  const id = (modelId || "").trim();
+  const hit = models.find((m) => m.model_id === id) || models[0];
+  return hit?.capabilities || {};
+}
+
 function AudioUpload({ value, onChange }: { value: string; onChange: (url: string) => void }) {
   const ref = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -67,7 +84,7 @@ function AudioUpload({ value, onChange }: { value: string; onChange: (url: strin
     <>
       <label>
         音频地址
-        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="/uploads/… 或上传" />
+        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="粘贴地址，或点下面上传" />
       </label>
       <button type="button" className="ghost" disabled={busy} onClick={() => ref.current?.click()}>
         {busy ? "上传中…" : "上传音频"}
@@ -85,7 +102,7 @@ function AudioUpload({ value, onChange }: { value: string; onChange: (url: strin
       />
       {value && <audio src={value} controls style={{ width: "100%", marginTop: "0.4rem" }} />}
       {error && <p className="error">{error}</p>}
-      <p className="wf-field-hint">mp3 / wav / m4a / aac。官方模板预填演示床垫，可替换。</p>
+      <p className="wf-field-hint">支持 mp3 / wav / m4a。模板里的演示配乐可以换成自己的。</p>
     </>
   );
 }
@@ -112,7 +129,7 @@ function VideoUpload({ value, onChange }: { value: string; onChange: (url: strin
     <>
       <label>
         视频地址
-        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="/uploads/… 或上传 mp4/webm/mov" />
+        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="粘贴地址，或点下面上传 mp4" />
       </label>
       <button type="button" className="ghost" disabled={busy} onClick={() => ref.current?.click()}>
         {busy ? "上传中…" : "上传视频"}
@@ -126,7 +143,7 @@ function VideoUpload({ value, onChange }: { value: string; onChange: (url: strin
       />
       {value && <video src={value} controls style={{ width: "100%", marginTop: "0.4rem" }} />}
       {error && <p className="error">{error}</p>}
-      <p className="wf-field-hint">mp4 / webm / mov。可接到视频反推、裁切、拆音轨等节点。</p>
+      <p className="wf-field-hint">支持 mp4 / webm / mov。可接到拆参考片、裁视频、拆声音。</p>
     </>
   );
 }
@@ -137,6 +154,7 @@ export default function WfInspector({
   llmModels = [],
   ttsModels = [],
   imageModels = [],
+  asrModels = [],
   modelId,
   onChange,
   onDelete,
@@ -148,7 +166,7 @@ export default function WfInspector({
   if (!data) {
     return (
       <aside className="wf-inspector">
-        <p className="muted">选中节点可改参数；节点上可直接改名称。双击媒体可全屏。</p>
+        <p className="muted">点画布上的步骤，就能改文案、上传图或选时长。双击图片/视频可放大。</p>
       </aside>
     );
   }
@@ -164,21 +182,20 @@ export default function WfInspector({
           <input value={d.label} onChange={(e) => onChange({ label: e.target.value })} />
         </label>
 
-        {d.stale && <p className="wf-stale-hint">上游已变更，当前结果已过期</p>}
-        {d.simulated && <p className="wf-sim-hint">此结果为超管模拟填入</p>}
+        {d.stale && <p className="wf-stale-hint">前面的步骤改过了，当前结果已经过期</p>}
 
         {nt === "TextAsset" && (
           <>
             <label>
-              文本角色
+              这份文案是
               <select
                 value={d.textRole || "brief"}
                 onChange={(e) =>
                   onChange({ textRole: e.target.value as WfData["textRole"] })
                 }
               >
-                <option value="brief">Brief</option>
-                <option value="prompt">提示词</option>
+                <option value="brief">品牌简介</option>
+                <option value="prompt">画面描述</option>
                 <option value="notes">备注</option>
               </select>
             </label>
@@ -196,7 +213,7 @@ export default function WfInspector({
                   />
                 </label>
                 <label>
-                  Slogan
+                  口号
                   <input
                     value={d.slogan || ""}
                     onChange={(e) => onChange({ slogan: e.target.value })}
@@ -206,7 +223,7 @@ export default function WfInspector({
               </>
             )}
             <label>
-              正文 / 提示
+              正文
               <textarea
                 rows={4}
                 value={d.prompt || d.text || ""}
@@ -226,7 +243,7 @@ export default function WfInspector({
               value={d.image_url || ""}
               onChange={(url) => onChange({ image_url: url, stale: false })}
               label="图片"
-              hint="上传或粘贴 URL。可接到文生图的参考图口，或图生视频。"
+              hint="上传或粘贴图片地址。可接到出图或出视频。"
             />
           </>
         )}
@@ -260,7 +277,7 @@ export default function WfInspector({
               }
             />
             <label>
-              反推说明 / Brief
+              你想怎么用这条参考片
               <textarea
                 rows={4}
                 value={d.prompt || d.text || ""}
@@ -279,7 +296,7 @@ export default function WfInspector({
               </select>
             </label>
             <label>
-              固定抽帧数量
+              固定抽几张
               <input
                 type="number"
                 min={1}
@@ -290,7 +307,7 @@ export default function WfInspector({
               />
             </label>
             <label>
-              最大分镜数
+              最多拆几镜
               <input
                 type="number"
                 min={1}
@@ -301,7 +318,7 @@ export default function WfInspector({
               />
             </label>
             <label>
-              切镜阈值
+              镜头切换灵敏度
               <input
                 type="number"
                 min={0.02}
@@ -312,7 +329,7 @@ export default function WfInspector({
               />
             </label>
             <label>
-              采样 FPS
+              每秒抽几帧
               <input
                 type="number"
                 min={0.25}
@@ -323,7 +340,7 @@ export default function WfInspector({
               />
             </label>
             <label>
-              Prompt 风格
+              提示词风格
               <select
                 value={d.prompt_style || "seedance"}
                 onChange={(e) => onChange({ prompt_style: e.target.value as WfData["prompt_style"] })}
@@ -346,7 +363,7 @@ export default function WfInspector({
                 disabled={!canExpandScenes}
                 onClick={() => onExpandScenes?.("with_image")}
               >
-                从分镜生成工作流
+                按分镜摆到画布
               </button>
               <button
                 type="button"
@@ -354,10 +371,10 @@ export default function WfInspector({
                 disabled={!canExpandScenes}
                 onClick={() => onExpandScenes?.("silent")}
               >
-                仅生成视频镜头
+                只要视频镜头
               </button>
             </div>
-            <p className="wf-field-hint">运行后会输出分析文本、Seedance prompt、关键帧、时间轴和 scenes，可一键展开为多镜头工作流。</p>
+            <p className="wf-field-hint">跑完会得到分镜、画面描述和关键帧。点上面的按钮可以自动摆到画布上。</p>
           </>
         )}
 
@@ -365,10 +382,15 @@ export default function WfInspector({
           <>
             {(() => {
               const m = models.find((x) => x.model_id === (d.model_id || modelId));
-              const dMin = m?.duration_min ?? 2;
-              const dMax = m?.duration_max ?? 30;
+              const caps = capsOf(models, d.model_id || modelId);
+              const dMin = caps.duration_min ?? m?.duration_min ?? 2;
+              const dMax = caps.duration_max ?? m?.duration_max ?? 30;
               const clampDur = (raw: number) =>
                 Math.max(dMin, Math.min(dMax, Number.isFinite(raw) ? raw : dMin));
+              const lastOk = Boolean(caps.supports_first_last_frame);
+              const styleOk = Boolean(caps.supports_style_reference);
+              const charOk = Boolean(caps.supports_character_reference);
+              const productOk = Boolean(caps.supports_product_reference);
               return (
                 <>
                   <label>
@@ -409,7 +431,7 @@ export default function WfInspector({
                     />
                   </label>
                   <p className="wf-field-hint">
-                    必填（或从上游 <strong>prompt</strong> 槽接入）。本栏有内容时优先用本栏；为空则用上游。都空会报「缺少有效提示词」。
+                    写这一镜要拍什么。左边接上文字也可以；这里填了就优先用这里的。
                   </p>
                   <label>
                     时长（秒）
@@ -434,31 +456,72 @@ export default function WfInspector({
                       ? "（火山方舟 Seedance 2.x 最短约 4 秒；填更短会按下限生成并计费）。"
                       : m?.model_id === "seedance-lite"
                         ? "（火山方舟 Seedance Lite：约 2–12 秒；超出范围会自动夹紧）。"
-                        : m?.provider === "mock"
-                          ? "（本地模拟版样片时长）。"
-                          : "（超出范围提交时会自动夹紧）。"}
-                    {" "}一键跑使用本节点此时长。
+                        : "（超出范围提交时会自动夹紧）。"}
+                    {" "}点「开始生成」时用这里的时长。
                   </p>
                   {m && (
                     <p className="wf-field-hint">
-                      {m.provider === "mock"
-                        ? "本地seedance模拟版（Seedance LocalSimulate）：本机样片，不是真实 Seedance。"
-                        : m.model_id === "seedance-2.5"
-                          ? "火山方舟 Seedance 2.x：有参考图走图生，否则文生；默认同步音频。"
-                          : m.model_id === "seedance-lite"
-                            ? "火山方舟 Seedance Lite：有参考图走图生，否则文生；无原生音频。"
-                            : null}
+                      {m.model_id === "seedance-2.5"
+                        ? "火山方舟 Seedance 2.x：有参考图走图生，否则文生；默认同步音频。支持首尾帧。"
+                        : m.model_id === "seedance-lite"
+                          ? "火山方舟 Seedance Lite：有参考图走图生，否则文生；无原生音频。不支持首尾帧。"
+                          : null}
                     </p>
+                  )}
+                  <ReferenceImageField
+                    value={d.first_image_url || d.image_url || ""}
+                    onChange={(url) => onChange({ image_url: url, first_image_url: url })}
+                    label="首帧图"
+                    hint="有图就按图生成；没图就按文字生成。左边接上的图会优先使用。"
+                  />
+                  <ReferenceImageField
+                    value={d.last_image_url || ""}
+                    onChange={(url) => onChange({ last_image_url: url })}
+                    label="尾帧"
+                    hint="不是所有模型都支持尾帧。"
+                    disabled={!lastOk}
+                    disabledHint="当前模型不支持首尾帧输入，请更换模型或移除尾帧。"
+                  />
+                  <ReferenceImageField
+                    value={d.style_image_url || ""}
+                    onChange={(url) => onChange({ style_image_url: url })}
+                    label="风格参考图"
+                    hint="可选。"
+                    disabled={!styleOk}
+                    disabledHint="当前模型不支持风格参考图。"
+                  />
+                  <ReferenceImageField
+                    value={d.character_image_url || ""}
+                    onChange={(url) => onChange({ character_image_url: url })}
+                    label="角色参考图"
+                    hint="可选。"
+                    disabled={!charOk}
+                    disabledHint="当前模型不支持角色参考图。"
+                  />
+                  <ReferenceImageField
+                    value={d.product_image_url || ""}
+                    onChange={(url) => onChange({ product_image_url: url })}
+                    label="产品参考图"
+                    hint="有产品图时建议放这里。"
+                    disabled={!productOk}
+                    disabledHint="当前模型不支持产品参考图。"
+                  />
+                  {(lastOk || styleOk || charOk || productOk) && (
+                    <label>
+                      参考强度
+                      <input
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={d.reference_strength ?? 0.7}
+                        onChange={(e) => onChange({ reference_strength: Number(e.target.value) })}
+                      />
+                    </label>
                   )}
                 </>
               );
             })()}
-            <ReferenceImageField
-              value={d.image_url || ""}
-              onChange={(url) => onChange({ image_url: url })}
-              label="参考图（可被上游覆盖）"
-              hint="有图 → 图生视频；无图 → 文生视频。槽位 image 优先于本栏。"
-            />
           </>
         )}
 
@@ -499,7 +562,7 @@ export default function WfInspector({
               />
             </label>
             <p className="wf-field-hint">
-              必须 <strong>结束秒 &gt; 起始秒</strong>。默认对齐图生时长（5 秒）。若结束秒超过片长，ffmpeg 可能失败。
+              结束秒必须大于起始秒。如果结束秒超过片子长度，这一步会失败。
             </p>
           </>
         )}
@@ -507,14 +570,14 @@ export default function WfInspector({
         {nt === "VideoMux" && (
           <>
             <label>
-              画幅标记
+              画面比例
               <select value={d.aspect || "16:9"} onChange={(e) => onChange({ aspect: e.target.value })}>
                 <option value="16:9">16:9</option>
                 <option value="9:16">9:16</option>
               </select>
             </label>
             <p className="wf-field-hint">
-              当前拼接<strong>不会按此重编码改画幅</strong>，只写入结果元数据；成片比例取决于上游片段本身。
+              这里只是标记比例，不会把片子拉伸。成片比例跟接进来的片段一样。
             </p>
           </>
         )}
@@ -528,29 +591,36 @@ export default function WfInspector({
 
         {nt === "MixAudio" && (
           <p className="wf-field-hint">
-            必须接满 <strong>video + BGM + 口播</strong> 三口，缺一则整单失败。BGM 循环到画面时长；口播不循环、超长裁切。
+            左边要接上视频、配乐和口播，缺一个就会失败。配乐会循环到画面长度；口播太长会被裁掉。
           </p>
         )}
 
         {nt === "VideoDemux" && (
           <p className="wf-field-hint">
-            有声视频 → 静音画面 + 音轨。<strong>无音轨会整单失败</strong>。官方模板未预接；2.5
-            原声会叠在混音下，要干净请先接本节点。
+            把有声视频拆成静音画面和音轨。片子里没有声音时这一步会失败。想去掉原声再混音，先接这一步。
           </p>
         )}
 
         {nt === "TextToImage" && (
           <>
+            {(() => {
+              const caps = capsOf(imageModels, d.model_id);
+              const sizes = caps.sizes?.length ? caps.sizes : ["1024x1024"];
+              const sizeOk = Boolean(caps.sizes?.length);
+              const seedOk = Boolean(caps.supports_seed);
+              const negOk = Boolean(caps.supports_negative_prompt);
+              const strengthOk = Boolean(caps.supports_image_strength);
+              const batchOk = Boolean(caps.supports_batch);
+              return (
+                <>
             <label>
-              文生图模型
+              出图模型
               <select
-                value={d.model_id || imageModels[0]?.model_id || "t2i-local-simulate"}
+                value={d.model_id || imageModels[0]?.model_id || ""}
                 onChange={(e) => onChange({ model_id: e.target.value })}
               >
-                {(imageModels.length
-                  ? imageModels
-                  : [{ model_id: "t2i-local-simulate", label: "本地文生图模拟", cost_per_second: 0, provider: "mock" }]
-                ).map((opt) => (
+                {imageModels.length === 0 && <option value="">（无可用出图模型）</option>}
+                {imageModels.map((opt) => (
                   <option key={opt.model_id} value={opt.model_id}>
                     {opt.label || opt.model_id}
                     {opt.cost_per_second ? ` · ${opt.cost_per_second}/张` : ""}
@@ -559,7 +629,7 @@ export default function WfInspector({
               </select>
             </label>
             <label>
-              提示词（可被上游覆盖）
+              画面描述
               <textarea
                 rows={3}
                 value={d.prompt || d.text || ""}
@@ -570,11 +640,140 @@ export default function WfInspector({
               value={d.image_url || ""}
               onChange={(url) => onChange({ image_url: url })}
               label="参考图（可选）"
-              hint="有图则按图生图意图；本轮模拟仍返回同一张占位图。"
+              hint="有参考图会尽量按图来。"
+              disabled={caps.supports_image_to_image === false}
+              disabledHint="当前模型不支持图生图，请移除参考图或更换模型。"
             />
+            <label className={sizeOk ? "" : "wf-cap-off"}>
+              尺寸
+              <select
+                value={d.size || sizes[0]}
+                disabled={!sizeOk}
+                onChange={(e) => onChange({ size: e.target.value })}
+              >
+                {sizes.map((sz) => (
+                  <option key={sz} value={sz}>
+                    {sz}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {!sizeOk && <p className="wf-field-hint">当前模型不支持指定尺寸。</p>}
+            <label className={negOk ? "" : "wf-cap-off"}>
+              不要出现的内容
+              <textarea
+                rows={2}
+                disabled={!negOk}
+                value={d.negative_prompt || ""}
+                onChange={(e) => onChange({ negative_prompt: e.target.value })}
+                placeholder={negOk ? "例如：不要字幕、水印、错字" : "当前模型不支持这项"}
+              />
+            </label>
+            <label className={seedOk ? "" : "wf-cap-off"}>
+              随机种子
+              <input
+                type="number"
+                min={0}
+                step={1}
+                disabled={!seedOk}
+                value={d.seed ?? ""}
+                onChange={(e) => onChange({ seed: e.target.value === "" ? undefined : Number(e.target.value) })}
+                placeholder={seedOk ? "可留空" : "当前模型不支持这项"}
+              />
+            </label>
+            <label className={batchOk ? "" : "wf-cap-off"}>
+              批量张数
+              <input
+                type="number"
+                min={1}
+                max={4}
+                step={1}
+                disabled={!batchOk}
+                value={d.batch_size ?? 1}
+                onChange={(e) => onChange({ batch_size: Number(e.target.value) })}
+              />
+            </label>
+            <label className={strengthOk ? "" : "wf-cap-off"}>
+              参考图强度
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                disabled={!strengthOk}
+                value={d.image_strength ?? 0.7}
+                onChange={(e) => onChange({ image_strength: Number(e.target.value) })}
+              />
+            </label>
+            {(!seedOk || !negOk || !strengthOk) && (
+              <p className="wf-field-hint">灰色项是当前模型做不到的，不会提交。</p>
+            )}
             <p className="wf-field-hint">
-              本地模拟不扣费；真图像渠道按「每张图片」扣费，Agent 触发生成时会先弹确认卡。
+              图像渠道按「每张图片」扣费，Agent 触发生成时会先弹确认卡。
             </p>
+                </>
+              );
+            })()}
+          </>
+        )}
+
+        {nt === "ImageCompare" && (
+          <>
+            <label>
+              对比模式
+              <select
+                value={d.compare_mode || "slider"}
+                onChange={(e) => onChange({ compare_mode: e.target.value as WfData["compare_mode"] })}
+              >
+                <option value="slider">滑杆对比</option>
+                <option value="side_by_side">左右并排</option>
+              </select>
+            </label>
+            <label>
+              输出选择
+              <select
+                value={d.selected || "after"}
+                onChange={(e) => {
+                  const selected = e.target.value as "before" | "after";
+                  const url = selected === "before" ? d.before_url : d.after_url;
+                  onChange({ selected, url: url || "", image_url: url || "" });
+                }}
+              >
+                <option value="before">A（before）</option>
+                <option value="after">B（after）</option>
+              </select>
+            </label>
+            <div className="wf-compare-thumbs">
+              <div>
+                <p className="wf-field-hint">A</p>
+                {d.before_url ? <img src={d.before_url} alt="" /> : <span className="muted">未接入</span>}
+              </div>
+              <div>
+                <p className="wf-field-hint">B</p>
+                {d.after_url ? <img src={d.after_url} alt="" /> : <span className="muted">未接入</span>}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="ghost"
+              disabled={!d.before_url && !d.after_url}
+              onClick={() => {
+                const before = d.after_url || "";
+                const after = d.before_url || "";
+                const selected = d.selected === "before" ? "after" : "before";
+                const url = selected === "before" ? before : after;
+                onChange({
+                  before_url: before,
+                  after_url: after,
+                  selected,
+                  url,
+                  image_url: url,
+                });
+              }}
+            >
+              交换 A / B
+            </button>
+            <p className="wf-field-hint">跑完后，当前选中的那张会传到后面的步骤。</p>
           </>
         )}
 
@@ -600,7 +799,7 @@ export default function WfInspector({
                 onChange={(e) => onChange({ trim_end: Number(e.target.value) })}
               />
             </label>
-            <p className="wf-field-hint">结束秒为 0 或不大于起始秒时，整段直通。</p>
+            <p className="wf-field-hint">结束秒填 0，或比起始还小，就整段原样通过。</p>
           </>
         )}
 
@@ -611,17 +810,17 @@ export default function WfInspector({
               <input
                 value={d.text || d.slogan || ""}
                 onChange={(e) => onChange({ text: e.target.value })}
-                placeholder="空则用上游口号；都空则直通"
+                placeholder="不填就用前面接上的口号；都空就原样通过"
               />
             </label>
-            <p className="wf-field-hint">烧在画面下部。不对口型。无字则直通视频，不失败。</p>
+            <p className="wf-field-hint">字会叠在画面下方，不会对口型。没写字就原样通过。</p>
           </>
         )}
 
         {nt === "TtsSpeak" && (
           <>
             <label>
-              TTS 模型
+              配音模型
               <select
                 value={d.model_id || ttsModels[0]?.model_id || "tts-1"}
                 onChange={(e) => onChange({ model_id: e.target.value })}
@@ -647,13 +846,84 @@ export default function WfInspector({
               </select>
             </label>
             <label>
-              口播文本（可被上游 narration 覆盖）
+              要念的文案
               <textarea
                 rows={3}
                 value={d.text || d.prompt || ""}
                 onChange={(e) => onChange({ text: e.target.value, prompt: e.target.value })}
               />
             </label>
+          </>
+        )}
+
+        {nt === "SpeechToText" && (
+          <>
+            <VideoUpload
+              value={d.clip_url || d.result_url || d.preview_url || (d.audio_url ? "" : d.media_url) || ""}
+              onChange={(url) =>
+                onChange({
+                  media_url: url,
+                  clip_url: url,
+                  result_url: url,
+                  preview_url: url,
+                  stale: false,
+                })
+              }
+            />
+            <AudioUpload
+              value={d.audio_url || ""}
+              onChange={(url) => onChange({ audio_url: url, media_url: url || d.media_url, stale: false })}
+            />
+            <label>
+              听写模型
+              <select
+                value={d.model_id || asrModels[0]?.model_id || ""}
+                onChange={(e) => onChange({ model_id: e.target.value })}
+              >
+                {asrModels.length === 0 && <option value="">（无可用听写模型）</option>}
+                {asrModels.map((opt) => (
+                  <option key={opt.model_id} value={opt.model_id}>
+                    {opt.label || opt.model_id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              语言
+              <select
+                value={d.language || "zh"}
+                onChange={(e) => onChange({ language: e.target.value })}
+              >
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+                <option value="auto">自动检测</option>
+              </select>
+            </label>
+            <label>
+              识别全文
+              <textarea
+                rows={5}
+                value={d.text || ""}
+                onChange={(e) => onChange({ text: e.target.value, prompt: e.target.value })}
+                placeholder="跑完会显示全文，可改完再往下传"
+              />
+            </label>
+            <button type="button" className="ghost" disabled={!d.text} onClick={() => void copyText(d.text || "")}>
+              复制全文
+            </button>
+            <label>
+              字幕稿
+              <textarea
+                rows={6}
+                value={d.srt || ""}
+                onChange={(e) => onChange({ srt: e.target.value })}
+                placeholder="跑完会显示字幕稿，可复制到剪辑软件"
+              />
+            </label>
+            <button type="button" className="ghost" disabled={!d.srt} onClick={() => void copyText(d.srt || "")}>
+              复制字幕稿
+            </button>
+            <p className="wf-field-hint">左边接视频或音频。全文可接到写镜头或加字幕；字幕稿可复制出去。</p>
           </>
         )}
 
@@ -680,13 +950,13 @@ export default function WfInspector({
                   });
                 }}
               >
-                <option value="chat">对话</option>
-                <option value="brief">Brief</option>
-                <option value="shot">单镜</option>
+                <option value="chat">随便聊</option>
+                <option value="brief">写品牌简介</option>
+                <option value="shot">写这一镜</option>
               </select>
             </label>
             <label>
-              LLM 模型
+              写作模型
               <select
                 value={d.model_id || llmModels[0]?.model_id || ""}
                 onChange={(e) => onChange({ model_id: e.target.value })}
@@ -716,11 +986,11 @@ export default function WfInspector({
                     });
                   }}
                 />
-                输出旁白
+                同时写口播稿
               </label>
             )}
             <label>
-              System prompt
+              给模型的要求
               <textarea
                 rows={4}
                 value={
@@ -733,22 +1003,20 @@ export default function WfInspector({
               />
             </label>
             <label>
-              用户补充
+              额外想说的
               <textarea
                 rows={3}
                 value={d.prompt || d.text || ""}
                 onChange={(e) => onChange({ prompt: e.target.value, text: e.target.value })}
-                placeholder="可空：只用上游 text"
+                placeholder="可留空：只用前面接上的文案"
               />
             </label>
             <p className="wf-field-hint">
-              {(d.model_id || llmModels[0]?.model_id) === "llm-local-simulate"
-                ? "本地 LLM 模拟：即时返回，不调上游。"
-                : "真模型会走外网；约 20 秒未响应即失败。演示请改选「本地 LLM 模拟」。"}
+              会调用已启用的对话模型；大约 20 秒没响应就算失败。
               {(d.llmRole || "shot") === "shot"
                 ? d.wantNarration === false
-                  ? " 单镜只出画面 prompt，不写旁白。"
-                  : " 单镜输出 JSON：prompt + narration。解析失败整单失败。"
+                  ? " 这一镜只写画面，不写口播。"
+                  : " 这一镜会同时写出画面描述和口播稿。"
                 : ""}
             </p>
             {(d.runStatus === "succeeded" || d.narration || d.runOutput?.prompt || d.runOutput?.text) && (
@@ -757,12 +1025,12 @@ export default function WfInspector({
                 {(d.llmRole || "shot") === "shot" ? (
                   <>
                     <label>
-                      画面 prompt
+                      画面描述
                       <textarea rows={4} readOnly value={String(d.runOutput?.prompt || d.prompt || "")} />
                     </label>
                     {d.wantNarration !== false && (
                       <label>
-                        旁白 narration
+                        口播稿
                         <textarea rows={3} readOnly value={String(d.runOutput?.narration || d.narration || "")} />
                       </label>
                     )}
@@ -780,7 +1048,7 @@ export default function WfInspector({
 
         {onGenerate && (
           <button type="button" className="primary solid" disabled={!canGenerate} onClick={onGenerate}>
-            生成此节点
+            生成这一步
           </button>
         )}
 
@@ -795,7 +1063,7 @@ export default function WfInspector({
         )}
 
         <button type="button" className="ghost danger" onClick={onDelete}>
-          删除节点
+          删除这一步
         </button>
       </div>
     </aside>

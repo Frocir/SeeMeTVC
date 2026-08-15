@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal
 from app.models import Channel, User, Workflow, WorkflowRun, WorkflowRunStatus
-from app.services import image_gen, media_ops, seedance, video_reverse
+from app.services import asr as asr_svc
+from app.services import image_gen, media_ops, model_capabilities, seedance, video_reverse
 from app.services import llm as llm_svc
 from app.services import tts as tts_svc
 from app.services.ledger import KIND_CHARGE, KIND_REFUND, record_entry
@@ -53,6 +54,8 @@ NODE_TYPES = frozenset(
         "MixAudio",
         "VideoDemux",
         "VideoReversePrompt",
+        "ImageCompare",
+        "SpeechToText",
         "AudioTrim",
         "TtsSpeak",
         "SubtitleBurn",
@@ -76,6 +79,8 @@ PRODUCER_TYPES = frozenset(
         "MixAudio",
         "VideoDemux",
         "VideoReversePrompt",
+        "ImageCompare",
+        "SpeechToText",
         "SubtitleBurn",
     }
 )
@@ -144,6 +149,8 @@ def _has_usable_output(ntype: str, data: dict) -> bool:
         return bool(str(data.get("prompt") or data.get("text") or data.get("narration") or "").strip())
     if ntype == "TextToImage":
         return bool(str(data.get("image_url") or "").strip())
+    if ntype == "ImageCompare":
+        return bool(str(data.get("url") or data.get("image_url") or "").strip())
     if ntype in {
         "ImageToVideo",
         "ShotGenerate",
@@ -163,6 +170,8 @@ def _has_usable_output(ntype: str, data: dict) -> bool:
         return bool(video and str(data.get("audio_url") or "").strip())
     if ntype == "VideoReversePrompt":
         return bool(str(data.get("prompt") or data.get("text") or "").strip() or data.get("scenes"))
+    if ntype == "SpeechToText":
+        return bool(str(data.get("text") or data.get("srt") or "").strip())
     return True
 
 
@@ -347,6 +356,12 @@ def _apply_port(merged: dict[str, Any], target_port: str | None, value: Any) -> 
                     merged[k] = v
             return
 
+    if port in ("before", "after"):
+        url = value if isinstance(value, str) else (value.get("image_url") if isinstance(value, dict) else None)
+        if isinstance(url, str) and url.strip():
+            merged[f"{port}_url"] = url.strip()
+        return
+
     if port in ("clips", "timeline", "video", "result"):
         if isinstance(value, str):
             merged.setdefault("clips", [])
@@ -372,6 +387,25 @@ def _apply_port(merged: dict[str, Any], target_port: str | None, value: Any) -> 
                     merged[k] = v
             return
 
+    if port == "media":
+        url = value if isinstance(value, str) else None
+        if isinstance(value, dict):
+            url = (
+                value.get("media_url")
+                or value.get("clip_url")
+                or value.get("result_url")
+                or value.get("preview_url")
+                or value.get("audio_url")
+            )
+        if isinstance(url, str) and url.strip():
+            u = url.strip()
+            merged["media_url"] = u
+            if u.lower().split("?", 1)[0].endswith((".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")):
+                merged["audio_url"] = u
+            else:
+                merged["clip_url"] = u
+        return
+
     if port in ("audio", "bgm", "vo"):
         url = value if isinstance(value, str) else (value.get("audio_url") if isinstance(value, dict) else None)
         if isinstance(url, str) and url.strip():
@@ -380,6 +414,7 @@ def _apply_port(merged: dict[str, Any], target_port: str | None, value: Any) -> 
             elif port == "vo":
                 merged["vo_url"] = url.strip()
             merged["audio_url"] = url.strip()
+            merged.setdefault("media_url", url.strip())
         return
 
     if port == "narration":
@@ -475,6 +510,11 @@ def _tag_ports(ntype: str, out: dict[str, Any]) -> dict[str, Any]:
         }
     elif free == "TextToImage":
         ports["image"] = out.get("image_url")
+    elif free == "ImageCompare":
+        ports["image"] = out.get("url") or out.get("image_url")
+    elif free == "SpeechToText":
+        ports["text"] = out.get("text") or ""
+        ports["srt"] = out.get("srt") or ""
     elif free == "ImageToVideo" or ntype == "ShotGenerate":
         ports["video"] = out.get("clip_url") or out.get("result_url")
         ports["clips"] = list(out.get("clips") or ([ports["video"]] if ports["video"] else []))
@@ -600,11 +640,32 @@ async def _run_shot(
     if not model_id:
         raise WorkflowExecError("图生视频缺少模型（model_id）")
 
-    image_url = data.get("image_url") or ctx.get("image_url")
+    image_url = data.get("first_image_url") or data.get("image_url") or ctx.get("image_url")
+    last_image_url = data.get("last_image_url") or ctx.get("last_image_url")
+    style_image_url = data.get("style_image_url")
+    character_image_url = data.get("character_image_url")
+    product_image_url = data.get("product_image_url")
 
     channel = await _pick_channel(db, str(model_id))
     if channel is None:
         raise WorkflowExecError(f"模型不可用：{model_id}")
+
+    check_data = {
+        **data,
+        "image_url": image_url,
+        "first_image_url": data.get("first_image_url") or image_url,
+        "last_image_url": last_image_url,
+        "style_image_url": style_image_url,
+        "character_image_url": character_image_url,
+        "product_image_url": product_image_url,
+    }
+    cap_err = model_capabilities.validate_node_params_against_capabilities(
+        "ImageToVideo",
+        check_data,
+        model_capabilities.get_channel_capabilities(channel),
+    )
+    if cap_err:
+        raise WorkflowExecError(cap_err)
 
     duration = seedance.clamp_duration_seconds(
         channel, int(data.get("duration_seconds") or ctx.get("duration_seconds") or 5)
@@ -647,6 +708,10 @@ async def _run_shot(
                 prompt=prompt,
                 duration_seconds=duration,
                 image_url=image_url,
+                last_image_url=str(last_image_url) if last_image_url else None,
+                style_image_url=str(style_image_url) if style_image_url else None,
+                character_image_url=str(character_image_url) if character_image_url else None,
+                product_image_url=str(product_image_url) if product_image_url else None,
             )
             url: str | None = None
             rate_hits = 0
@@ -712,6 +777,12 @@ async def _run_shot(
         "prompt": prompts[-1],
         "model_id": model_id,
         "duration_seconds": duration,
+        "image_url": image_url,
+        "first_image_url": image_url,
+        "last_image_url": last_image_url,
+        "style_image_url": style_image_url,
+        "character_image_url": character_image_url,
+        "product_image_url": product_image_url,
     }
 
 
@@ -772,6 +843,29 @@ def _exec_image_asset(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
     if image:
         out["image_url"] = image
     return out
+
+
+def _exec_image_compare(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
+    before = str(data.get("before_url") or ctx.get("before_url") or "").strip()
+    after = str(data.get("after_url") or ctx.get("after_url") or "").strip()
+    selected = str(data.get("selected") or "after").strip() or "after"
+    if selected not in {"before", "after"}:
+        selected = "after"
+    if not before and not after:
+        raise WorkflowExecError("图像对比缺少输入：请连接 A / B 图片")
+    url = before if selected == "before" else after
+    if not url:
+        url = after or before
+        selected = "after" if after else "before"
+    return {
+        **ctx,
+        "before_url": before or None,
+        "after_url": after or None,
+        "selected": selected,
+        "compare_mode": data.get("compare_mode") or "slider",
+        "url": url,
+        "image_url": url,
+    }
 
 
 def _exec_video_asset(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
@@ -848,11 +942,8 @@ async def _exec_llm(
         )
         ch = result.scalar_one_or_none()
     if ch is None:
-        raise WorkflowExecError("没有已启用的 LLM 渠道。请超管启用「本地 LLM 模拟」，或填写真模型 Key。")
-    if llm_svc.is_simulate_channel(ch):
-        await on_hint("本地 LLM 模拟，即时返回…")
-    else:
-        await on_hint("正在调用真 LLM（约 20 秒未响应即失败）…")
+        raise WorkflowExecError("没有已启用的 LLM 渠道。请超管填写并启用对话模型。")
+    await on_hint("正在调用 LLM（约 20 秒未响应即失败）…")
     try:
         raw = await llm_svc.chat_complete(
             ch, system=system, user=user, role=role, want_narration=want_narration
@@ -891,6 +982,61 @@ async def _exec_tts(db: AsyncSession, ctx: dict[str, Any], data: dict, on_hint) 
     except tts_svc.TtsError as exc:
         raise WorkflowExecError(str(exc)) from exc
     return {**ctx, "audio_url": url, "narration": text, "voice": voice}
+
+
+async def _exec_speech_to_text(
+    db: AsyncSession,
+    user_id: int,
+    ctx: dict[str, Any],
+    data: dict,
+    on_hint,
+) -> dict[str, Any]:
+    media = (
+        data.get("media_url")
+        or ctx.get("media_url")
+        or data.get("audio_url")
+        or ctx.get("audio_url")
+        or data.get("clip_url")
+        or ctx.get("clip_url")
+        or data.get("result_url")
+        or ctx.get("result_url")
+        or data.get("preview_url")
+        or ctx.get("preview_url")
+        or (ctx.get("clips") or [None])[-1]
+    )
+    if not media:
+        raise WorkflowExecError("口播提取缺少输入视频或音频：请连接 media 或 audio")
+    language = str(data.get("language") or "zh").strip() or "zh"
+    model_id = str(data.get("model_id") or "").strip()
+    ch = await _pick_channel(db, model_id) if model_id else None
+    if ch is not None and (ch.kind or "") != "asr":
+        ch = None
+    if ch is None:
+        result = await db.execute(
+            select(Channel)
+            .where(Channel.enabled.is_(True), Channel.kind == "asr")
+            .order_by(Channel.priority.desc(), Channel.id.asc())
+            .limit(1)
+        )
+        ch = result.scalar_one_or_none()
+    if ch is None:
+        raise WorkflowExecError("没有已启用的 ASR 渠道")
+    await on_hint("正在转写口播…")
+    try:
+        result = await asr_svc.transcribe(ch, media_url=str(media), user_id=user_id, language=language)
+    except asr_svc.AsrError as exc:
+        raise WorkflowExecError(str(exc)) from exc
+    segments = [{"start": s.start, "end": s.end, "text": s.text} for s in result.segments]
+    return {
+        **ctx,
+        "media_url": str(media),
+        "language": language,
+        "model_id": ch.model_id,
+        "text": result.text,
+        "prompt": result.text,
+        "segments": segments,
+        "srt": result.srt,
+    }
 
 
 async def _exec_mix(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str, Any]:
@@ -945,6 +1091,12 @@ async def _exec_t2i(
     if ch is None:
         raise WorkflowExecError("没有已启用的文生图渠道")
 
+    caps = model_capabilities.get_channel_capabilities(ch)
+    cap_err = model_capabilities.validate_node_params_against_capabilities("TextToImage", {**data, "image_url": image_url}, caps)
+    if cap_err:
+        raise WorkflowExecError(cap_err)
+    img_params = model_capabilities.filter_image_params(data, caps)
+
     cost = round(float(ch.cost_per_second or 0), 4)
     await db.refresh(user)
     if user.balance < cost:
@@ -969,6 +1121,11 @@ async def _exec_t2i(
             prompt=prompt,
             image_url=str(image_url) if image_url else None,
             user_id=user.id,
+            size=str(img_params.get("size") or "") or None,
+            negative_prompt=str(img_params.get("negative_prompt") or "") or None,
+            seed=img_params.get("seed"),
+            batch_size=int(img_params.get("batch_size") or 1),
+            image_strength=img_params.get("image_strength"),
         )
     except image_gen.ImageGenError as exc:
         if cost > 0:
@@ -985,7 +1142,7 @@ async def _exec_t2i(
             charged.pop()
             await db.commit()
         raise WorkflowExecError(str(exc)) from exc
-    return {**ctx, "image_url": url, "prompt": prompt, "image_cost": cost, "model_id": ch.model_id}
+    return {**ctx, "image_url": url, "prompt": prompt, "image_cost": cost, "model_id": ch.model_id, **img_params}
 
 
 async def _exec_audio_trim(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str, Any]:
@@ -1050,6 +1207,111 @@ async def _exec_demux(user_id: int, ctx: dict[str, Any], data: dict) -> dict[str
         "clips": [silent],
         "audio_url": audio,
     }
+
+
+HISTORY_NODE_TYPES = frozenset(
+    {
+        "TextToImage",
+        "ImageToVideo",
+        "ShotGenerate",
+        "TtsSpeak",
+        "VideoMux",
+        "TimelineMux",
+        "SubtitleBurn",
+        "VideoReversePrompt",
+        "ImageCompare",
+        "SpeechToText",
+    }
+)
+
+
+async def _record_node_history(
+    db: AsyncSession,
+    *,
+    user: User,
+    run: WorkflowRun,
+    node_id: str,
+    ntype: str,
+    data: dict,
+    out: dict[str, Any],
+    cost: float,
+    status: str = "succeeded",
+    error: str = "",
+) -> None:
+    if ntype not in HISTORY_NODE_TYPES or not run.workflow_id:
+        return
+    from app.services import asset_versions as versions_svc
+
+    prompt = str(out.get("prompt") or data.get("prompt") or data.get("text") or "")
+    model_name = str(out.get("model_id") or data.get("model_id") or "")
+    params = {
+        k: data.get(k)
+        for k in (
+            "duration_seconds",
+            "aspect",
+            "size",
+            "voice",
+            "frame_strategy",
+            "prompt_style",
+            "selected",
+            "compare_mode",
+            "language",
+            "size",
+            "seed",
+            "negative_prompt",
+            "batch_size",
+            "image_strength",
+            "first_image_url",
+            "last_image_url",
+            "reference_strength",
+        )
+        if data.get(k) is not None
+    }
+    common = dict(
+        user=user,
+        workflow_id=run.workflow_id,
+        run_id=run.id,
+        node_id=node_id,
+        node_type=ntype,
+        prompt=prompt,
+        model_name=model_name,
+        params=params,
+        cost=cost,
+        status=status,
+        error_message=error,
+    )
+
+    async def _one(*, kind: str, url: str = "", text: str = "", thumbnail_url: str = "") -> None:
+        await versions_svc.record_asset_version(
+            db,
+            kind=kind,
+            url=str(url or ""),
+            thumbnail_url=str(thumbnail_url or url or ""),
+            text=str(text or ""),
+            **common,
+        )
+
+    if ntype == "TextToImage":
+        await _one(kind="image", url=str(out.get("image_url") or ""))
+    elif ntype == "ImageCompare":
+        await _one(kind="image", url=str(out.get("url") or out.get("image_url") or ""))
+    elif ntype in {"ImageToVideo", "ShotGenerate", "VideoMux", "TimelineMux", "SubtitleBurn"}:
+        url = str(out.get("clip_url") or out.get("result_url") or "")
+        await _one(kind="video", url=url)
+    elif ntype == "TtsSpeak":
+        await _one(kind="audio", url=str(out.get("audio_url") or ""), text=str(out.get("text") or data.get("text") or ""))
+    elif ntype == "SpeechToText":
+        await _one(kind="text", text=str(out.get("text") or out.get("srt") or data.get("text") or ""))
+    elif ntype == "VideoReversePrompt":
+        await _one(
+            kind="prompt",
+            text=str(out.get("prompt") or out.get("text") or ""),
+            thumbnail_url=str((out.get("frames") or [None])[0] or ""),
+        )
+        frames = out.get("frames") if isinstance(out.get("frames"), list) else []
+        for frame in frames:
+            if isinstance(frame, str) and frame.strip():
+                await _one(kind="image", url=frame.strip(), thumbnail_url=frame.strip())
 
 
 async def _exec_video_reverse(
@@ -1192,11 +1454,17 @@ async def execute_run(run_id: int) -> None:
                 elif ntype == "TextToImage":
                     out = await _exec_t2i(db, user, run, ctx, data, charged, _hint)
                     cost = float(out.get("image_cost") or 0)
+                elif ntype == "ImageCompare":
+                    out = _exec_image_compare(ctx, data)
+                elif ntype == "SpeechToText":
+                    out = await _exec_speech_to_text(db, user.id, ctx, data, _hint)
                 elif ntype in ("ImageToVideo", "ShotGenerate"):
                     image_wired = any(
                         str(e.get("targetHandle") or "") == "image" for e in _incoming_edges(nid, edges)
                     )
-                    if image_wired and not (data.get("image_url") or ctx.get("image_url")):
+                    if image_wired and not (
+                        data.get("image_url") or data.get("first_image_url") or ctx.get("image_url")
+                    ):
                         raise WorkflowExecError("图生视频已接图片，但上游没有可用图片")
                     out = await _run_shot(db, user, run, ctx, data, charged, on_hint=_hint)
                     cost = float(out.get("shot_cost") or 0)
@@ -1243,6 +1511,10 @@ async def execute_run(run_id: int) -> None:
                             "clip_url",
                             "result_url",
                             "image_url",
+                            "before_url",
+                            "after_url",
+                            "url",
+                            "selected",
                             "audio_url",
                             "narration",
                             "makeup_intensity",
@@ -1252,11 +1524,23 @@ async def execute_run(run_id: int) -> None:
                             "timeline",
                             "reference_video_url",
                             "outputs",
+                            "srt",
+                            "segments",
                         )
                     },
                     "error": None,
                     "cost": cost,
                 }
+                await _record_node_history(
+                    db,
+                    user=user,
+                    run=run,
+                    node_id=nid,
+                    ntype=ntype,
+                    data=data,
+                    out=out,
+                    cost=cost,
+                )
                 run.node_states_json = json.dumps(node_states, ensure_ascii=False)
                 run.cost = round(sum(charged), 4)
                 await db.refresh(user)

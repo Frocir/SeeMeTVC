@@ -16,6 +16,7 @@ type ChannelForm = {
   priority: number;
   enabled: boolean;
   remark: string;
+  capabilities_json: string;
 };
 
 const PROVIDER_PRESETS: Record<
@@ -60,19 +61,6 @@ const PROVIDER_PRESETS: Record<
     priority: 80,
     enabled: false,
   },
-  mock: {
-    label: "本地seedance模拟版（Seedance LocalSimulate）",
-    hint: "不调上游，本机 ffmpeg 彩条样片；不是真 Seedance",
-    provider: "mock",
-    kind: "video",
-    base_url: "",
-    model_id: "seedance-local-simulate",
-    upstream_model: "local-simulate",
-    cost_per_second: 0,
-    priority: 40,
-    enabled: true,
-    remark: "本地模拟版。真生成请启用火山方舟 Lite / 2.5。",
-  },
   agnes: {
     label: "Agnes AI Pavo（免费）",
     hint: "Key 存在渠道表；超管「改 Key」后启用。国内默认 https://api.agnes-ai.cn",
@@ -85,19 +73,6 @@ const PROVIDER_PRESETS: Record<
     priority: 10,
     enabled: false,
     remark: "免费渠道，超管改 Key 后启用",
-  },
-  "llm-sim": {
-    label: "本地 LLM 模拟",
-    hint: "不调上游，即时返回 Brief / 单镜 JSON。kind=llm",
-    provider: "mock",
-    kind: "llm",
-    base_url: "",
-    model_id: "llm-local-simulate",
-    upstream_model: "local-simulate",
-    cost_per_second: 0,
-    priority: 95,
-    enabled: true,
-    remark: "本地即时文案。真模型请另启用 OpenAI / Anthropic 并填 Key。",
   },
   "openai-llm": {
     label: "OpenAI 兼容 · 对话",
@@ -151,18 +126,44 @@ const PROVIDER_PRESETS: Record<
     enabled: true,
     remark: "compose 服务名 aisrv；Docker 内 base_url 用 http://aisrv:5050。",
   },
-  "t2i-sim": {
-    label: "本地文生图模拟",
-    hint: "占位图，不接真模型，不扣费。kind=image",
-    provider: "mock",
+  "openai-image": {
+    label: "OpenAI 兼容 · 图像",
+    hint: "Images API：/v1/images/generations。kind=image",
+    provider: "openai",
     kind: "image",
-    base_url: "",
-    model_id: "t2i-local-simulate",
-    upstream_model: "local-simulate",
+    base_url: "https://api.openai.com/v1",
+    model_id: "gpt-image-1",
+    upstream_model: "gpt-image-1",
     cost_per_second: 0,
-    priority: 95,
-    enabled: true,
-    remark: "本轮只出占位图。",
+    priority: 70,
+    enabled: false,
+    remark: "超管填 Key 后启用。image 渠道按单张图片扣费。",
+  },
+  "gemini-image": {
+    label: "向量引擎 · Gemini 文生图",
+    hint: "Gemini 原生 generateContent。Bearer sk-… ；模型如 gemini-2.5-flash-image",
+    provider: "gemini",
+    kind: "image",
+    base_url: "https://api.vectorengine.ai",
+    model_id: "gemini-2.5-flash-image",
+    upstream_model: "gemini-2.5-flash-image",
+    cost_per_second: 0,
+    priority: 90,
+    enabled: false,
+    remark: "向量引擎 Gemini 文生图。超管改 Key 后启用。",
+  },
+  "openai-asr": {
+    label: "OpenAI 兼容 · 语音识别",
+    hint: "Whisper / 网关 /v1/audio/transcriptions。kind=asr",
+    provider: "openai",
+    kind: "asr",
+    base_url: "https://api.openai.com/v1",
+    model_id: "whisper-1",
+    upstream_model: "whisper-1",
+    cost_per_second: 0,
+    priority: 70,
+    enabled: false,
+    remark: "超管填 Key 后启用。",
   },
 };
 
@@ -171,19 +172,30 @@ const KIND_LABEL: Record<string, string> = {
   llm: "LLM",
   tts: "TTS",
   image: "文生图",
+  asr: "ASR",
 };
 
 function guessPreset(ch: Pick<Channel, "provider" | "kind" | "model_id" | "base_url">): string {
   const kind = ch.kind || "video";
-  if (kind === "image") return "t2i-sim";
+  if (kind === "image") {
+    const mid = (ch.model_id || "").toLowerCase();
+    if (
+      ch.provider === "gemini" ||
+      ch.provider === "vectorengine" ||
+      ch.provider === "google" ||
+      mid.includes("gemini")
+    ) {
+      return "gemini-image";
+    }
+    return "openai-image";
+  }
+  if (kind === "asr") return "openai-asr";
   if (kind === "tts") return "edge-tts";
-  if (kind === "llm" && ch.provider === "mock") return "llm-sim";
   if (ch.provider === "anthropic") return "anthropic";
   if (ch.provider === "openai" && kind === "llm") {
     return (ch.base_url || "").includes("openai.com") ? "openai-llm" : "openai-custom";
   }
   if (ch.provider === "agnes" || ch.provider === "pavo") return "agnes";
-  if (ch.provider === "mock") return "mock";
   if (ch.model_id === "seedance-2.5") return "ark-2.5";
   if (ch.model_id === "seedance-lite") return "ark-lite";
   if (ch.provider === "ark" || ch.provider === "fal" || ch.provider === "volc") return "ark";
@@ -202,6 +214,7 @@ const emptyChannel: ChannelForm = {
   priority: 80,
   enabled: false,
   remark: "",
+  capabilities_json: "",
 };
 
 export default function AdminPage() {
@@ -257,21 +270,19 @@ export default function AdminPage() {
           ? "Seedance Lite（火山方舟）"
           : key === "ark-2.5"
             ? "Seedance 2.5（火山方舟）"
-            : key === "mock"
-              ? "本地seedance模拟版（Seedance LocalSimulate）"
-              : key === "openai-llm"
-                ? "OpenAI 兼容 · 对话"
-                : key === "anthropic"
-                  ? "Anthropic · 对话"
-                  : key === "openai-custom"
-                    ? "自定义 token（OpenAI 兼容）"
-                    : key === "edge-tts"
-                      ? "Edge TTS（aisrv）"
-                      : key === "llm-sim"
-                        ? "本地 LLM 模拟"
-                        : key === "t2i-sim"
-                          ? "本地文生图模拟"
-                          : form.name;
+            : key === "openai-llm"
+              ? "OpenAI 兼容 · 对话"
+              : key === "anthropic"
+                ? "Anthropic · 对话"
+                : key === "openai-custom"
+                  ? "自定义 token（OpenAI 兼容）"
+                  : key === "edge-tts"
+                    ? "Edge TTS（aisrv）"
+                    : key === "openai-image"
+                      ? "OpenAI 兼容 · 图像"
+                      : key === "gemini-image"
+                        ? "向量引擎 · Gemini 文生图"
+                        : form.name;
     setForm((prev) => ({
       ...prev,
       provider: preset.provider || key,
@@ -337,6 +348,7 @@ export default function AdminPage() {
       priority: ch.priority,
       enabled: ch.enabled,
       remark: ch.remark || "",
+      capabilities_json: JSON.stringify((ch.config_json as { capabilities?: unknown } | undefined)?.capabilities || {}, null, 2),
     });
     setCreateOpen(true);
   }
@@ -346,7 +358,25 @@ export default function AdminPage() {
     setFormError("");
     setError("");
     setMsg("");
-    const payload: Record<string, unknown> = { ...form };
+    const { capabilities_json, ...rest } = form;
+    const payload: Record<string, unknown> = { ...rest };
+    const rawCaps = (capabilities_json || "").trim();
+    if (rawCaps && rawCaps !== "{}") {
+      try {
+        const parsed = JSON.parse(rawCaps) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          setFormError("能力覆盖必须是 JSON 对象，例如 {\"supports_first_last_frame\": true}");
+          return;
+        }
+        payload.config_json = { capabilities: parsed };
+      } catch {
+        setFormError("能力覆盖 JSON 无法解析");
+        return;
+      }
+    } else {
+      payload.config_json = {};
+    }
+    delete payload.capabilities_json;
     if (editingId != null && !String(form.api_key || "").trim()) {
       delete payload.api_key;
     }
@@ -498,8 +528,8 @@ export default function AdminPage() {
         <p className="eyebrow">超管</p>
         <h1>超管后台管理</h1>
         <p className="lead">
-          管理上游渠道：视频（Seedance / Agnes）、LLM（本地模拟 / OpenAI / Anthropic）、TTS（aisrv）。
-          Key 只存在渠道表。本地 LLM / 文生图模拟与 TTS 本轮不扣费。
+          管理上游渠道：视频（Seedance / Agnes）、LLM（OpenAI / Anthropic）、TTS（aisrv）、文生图、ASR。
+          Key 只存在渠道表。请填写真实钥匙后再启用。
         </p>
       </div>
 
@@ -545,7 +575,7 @@ export default function AdminPage() {
                     <span>{ch.provider}</span>
                     <span>Key {ch.api_key_masked}</span>
                     <span>优先级 {ch.priority}</span>
-                    <span>{ch.cost_per_second}{ch.kind === "image" ? "/张" : "/秒"}</span>
+                    <span>{ch.cost_per_second}{ch.kind === "image" ? "/张" : ch.kind === "asr" ? "/次" : "/秒"}</span>
                   </div>
                   {ch.remark && <p className="admin-row-note">{ch.remark}</p>}
                   {probes[ch.id] && (
@@ -684,8 +714,8 @@ export default function AdminPage() {
             {(
               [
                 ["name", "名称"],
-                ["provider", "provider（ark / openai / anthropic / mock / agnes）"],
-                ["kind", "kind（video / llm / tts / image）"],
+                ["provider", "provider（ark / openai / anthropic / agnes / gemini）"],
+                ["kind", "kind（video / llm / tts / image / asr）"],
                 ["base_url", "Base URL"],
                 ["api_key", "API Key"],
                 ["model_id", "对外模型 ID"],
@@ -710,7 +740,11 @@ export default function AdminPage() {
               </label>
             ))}
             <label>
-              {form.kind === "image" ? "每张图片消耗余额" : "每秒消耗余额（Agnes 免费可为 0）"}
+              {form.kind === "image"
+                ? "每张图片消耗余额"
+                : form.kind === "asr"
+                  ? "每次转写消耗余额"
+                  : "每秒消耗余额（Agnes 免费可为 0）"}
               <input
                 type="number"
                 step="0.01"
@@ -722,7 +756,9 @@ export default function AdminPage() {
             <p className="muted" style={{ marginTop: "-0.35rem" }}>
               {form.kind === "image"
                 ? "image 渠道按单张图片扣费；TextToImage 生成前会进入确认卡。"
-                : "用户侧按「秒 × 此单价」扣费；请与上游真实成本大致对齐。"}
+                : form.kind === "asr"
+                  ? "asr 渠道本轮默认不扣费。填写真实 Key 后启用即可转写。"
+                  : "用户侧按「秒 × 此单价」扣费；请与上游真实成本大致对齐。"}
             </p>
             <label>
               优先级
@@ -733,7 +769,7 @@ export default function AdminPage() {
               />
             </label>
             <p className="muted" style={{ marginTop: "-0.35rem" }}>
-              数字越大越优先出现在模型列表。建议：方舟 Lite 80、2.5 70、本地模拟 40、Pavo 10。
+              数字越大越优先出现在模型列表。建议：方舟 Lite 80、2.5 70、Pavo 10。
             </p>
             <label className="checkbox">
               <input
@@ -743,6 +779,18 @@ export default function AdminPage() {
               />
               启用（建议先写入真实 Key 再勾选）
             </label>
+            <label>
+              能力覆盖 JSON（可选）
+              <textarea
+                rows={5}
+                value={form.capabilities_json}
+                onChange={(e) => setForm({ ...form, capabilities_json: e.target.value })}
+                placeholder='{"supports_first_last_frame": true}'
+              />
+            </label>
+            <p className="muted" style={{ marginTop: "-0.35rem" }}>
+              覆盖 provider 默认能力。留空则用内置矩阵（如 Seedance 2.5 支持首尾帧，Lite / OpenAI 图默认仅 size）。
+            </p>
             <div className="modal-actions">
               <button type="submit" className="primary admin-cta">
                 {editingId != null ? "保存修改" : "保存渠道"}

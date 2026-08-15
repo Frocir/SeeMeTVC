@@ -38,7 +38,12 @@ export default function TemplatesPage() {
   }
 
   function onPromo(promo: BeautyPromo) {
-    void useTpl("quick_shot", promo.title, promo.prompt, promo.brand);
+    void useTpl(
+      promo.kind === "hardware" ? "hardware_quick" : "quick_shot",
+      promo.title,
+      promo.prompt,
+      promo.brand,
+    );
   }
 
   return (
@@ -46,33 +51,39 @@ export default function TemplatesPage() {
       <div className="page-head">
         <p className="eyebrow">Templates + Lookbook</p>
         <h1>模板</h1>
-        <p className="lead">官方模板与 Lookbook 同款。选用后新建项目并打开编辑，提示词写入 Brief。</p>
+        <p className="lead">美学短片和硬件科创都能用。选一套流程，或从 Lookbook 点一张图开始。</p>
       </div>
       {error && <p className="error">{error}</p>}
-      <h2 className="block-title">官方模板</h2>
-      <div className="tpl-grid">
-        {WF_TEMPLATES.map((t) => (
-          <article key={t.id} className="tpl-card">
-            <h3>{t.name}</h3>
-            <p className="ver">{t.hint}</p>
-            <p className="muted" style={{ fontSize: "0.75rem" }}>
-              id: <code>{t.id}</code>
-            </p>
-            <button
-              className="primary"
-              type="button"
-              disabled={busy}
-              style={{ marginTop: 10 }}
-              onClick={() => void useTpl(t.id)}
-            >
-              用此模板新建项目
-            </button>
-          </article>
-        ))}
-      </div>
+      {(
+        [
+          ["beauty", "美学"],
+          ["hardware", "硬件 / 科创"],
+        ] as const
+      ).map(([kind, title]) => (
+        <div key={kind}>
+          <h2 className="block-title">{title}</h2>
+          <div className="tpl-grid">
+            {WF_TEMPLATES.filter((t) => t.kind === kind).map((t) => (
+              <article key={t.id} className="tpl-card">
+                <h3>{t.name}</h3>
+                <p className="ver">{t.hint}</p>
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={busy}
+                  style={{ marginTop: 10 }}
+                  onClick={() => void useTpl(t.id)}
+                >
+                  用此模板新建项目
+                </button>
+              </article>
+            ))}
+          </div>
+        </div>
+      ))}
       <BeautyPromoGallery
         title="Lookbook 同款"
-        subtitle="点选后新建项目，并把镜头提示词写入 Brief"
+        subtitle="点选后新建项目，并把画面描述写进文案"
         onPick={onPromo}
       />
     </section>

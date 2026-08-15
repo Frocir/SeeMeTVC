@@ -1,5 +1,7 @@
 /** Beauty TVC promo assets & prompt templates (placeholder stock for MVP). */
 
+export type LookbookKind = "beauty" | "hardware";
+
 export type BeautyPromo = {
   id: string;
   title: string;
@@ -9,6 +11,7 @@ export type BeautyPromo = {
   image: string;
   prompt: string;
   duration: number;
+  kind?: LookbookKind;
 };
 
 export const BEAUTY_PROMOS: BeautyPromo[] = [
@@ -103,3 +106,87 @@ export const BEAUTY_PROMOS: BeautyPromo[] = [
 ];
 
 export const BEAUTY_TAGS = ["全部", "唇妆", "底妆", "面妆", "护肤", "彩妆", "香氛", "套组"] as const;
+
+export const HARDWARE_PROMOS: BeautyPromo[] = [
+  {
+    id: "hw-cnc",
+    title: "CNC 铝合金机身",
+    tag: "结构件",
+    brand: "FORGE LAB",
+    kind: "hardware",
+    description: "阳极氧化铝件特写，突出开模精度与散热孔，适合 3C 结构件主片。",
+    image: "/hardware/cnc-body.jpg",
+    prompt:
+      "Industrial hardware TVC, CNC machined aluminum unibody on a dark bench, brushed metal, heat vents and screw seats, cool workshop overhead light, Shenzhen maker commercial, 16:9",
+    duration: 5,
+  },
+  {
+    id: "hw-pcb",
+    title: "板卡贴装工位",
+    tag: "板卡",
+    brand: "TRACE BOARD",
+    kind: "hardware",
+    description: "ESD 台面上的 PCB 与贴装细节，适合模组、电源、控制板种草。",
+    image: "/hardware/pcb-bench.jpg",
+    prompt:
+      "Close-up electronics TVC of a green PCB on an ESD mat, chips and connectors in focus, soldering station bokeh, cool practical light, hardware lab commercial",
+    duration: 6,
+  },
+  {
+    id: "hw-workshop",
+    title: "科创工坊全景",
+    tag: "工坊",
+    brand: "科创工坊",
+    kind: "hardware",
+    description: "工位、打样设备与动手场景，对标深圳科创学院宣传片开场。",
+    image: "/hardware/workshop.jpg",
+    prompt:
+      "Shenzhen hardware academy workshop TVC, benches with 3D printers and CNC, students assembling prototypes, documentary-commercial lighting, 16:9",
+    duration: 8,
+  },
+  {
+    id: "hw-drone",
+    title: "无人机静物",
+    tag: "无人机",
+    brand: "AIRFRAME",
+    kind: "hardware",
+    description: "碳纤机架与桨叶静物，适合航拍器、机器人开场英雄镜。",
+    image: "/hardware/drone.jpg",
+    prompt:
+      "Product hero of a compact carbon-fiber quadcopter on concrete, still props, cool rim light, industrial hardware commercial, no text",
+    duration: 5,
+  },
+  {
+    id: "hw-wearable",
+    title: "可穿戴表体",
+    tag: "可穿戴",
+    brand: "PULSE RIG",
+    kind: "hardware",
+    description: "钛合金表耳与充电触点微距，适合手表、手环、传感器模组。",
+    image: "/hardware/wearable.jpg",
+    prompt:
+      "Macro hardware TVC of a matte titanium smartwatch, metal lugs and pogo pins, cool daylight, premium electronics still, 16:9",
+    duration: 5,
+  },
+  {
+    id: "hw-proto",
+    title: "打样件对照",
+    tag: "样机",
+    brand: "ITER ATELIER",
+    kind: "hardware",
+    description: "光固化外壳与金属嵌件并置，强调从想法到可装配样机。",
+    image: "/hardware/prototype.jpg",
+    prompt:
+      "Rapid prototype still, white SLA printed enclosure beside a CNC metal insert, calipers on a maker-lab table, soft overhead light, hardware academy commercial",
+    duration: 6,
+  },
+];
+
+export const HARDWARE_TAGS = ["结构件", "工坊", "板卡", "无人机", "可穿戴", "样机"] as const;
+
+export const LOOKBOOK_PROMOS: BeautyPromo[] = [
+  ...BEAUTY_PROMOS.map((p) => ({ ...p, kind: "beauty" as const })),
+  ...HARDWARE_PROMOS,
+];
+
+export const LOOKBOOK_TAGS = ["全部", "美学", "硬件", ...BEAUTY_TAGS.slice(1), ...HARDWARE_TAGS] as const;

@@ -30,7 +30,7 @@ connect_defaults:
   - source_kind: image
     prefer_target: [image]
   - source_kind: video
-    prefer_target: [video]
+    prefer_target: [video, media]
   - source_kind: audio
     prefer_target: [audio]
     # MixAudio 的 audio 口是 bgm/vo，见 no_default_target_handles
@@ -57,6 +57,11 @@ recipes:
     when: 用户上传参考视频，希望拆分镜、仿运镜或提取 Seedance prompt
     chain: VideoAsset → VideoReversePrompt → LlmText 或 ImageToVideo.prompt
     must: 只参考风格/镜头/节奏，不复制真实人物脸、声音或未授权品牌。
+  - id: asr_subtitle
+    label: 口播提取烧字幕
+    when: 已有成片或口播音频，要抽出文案再烧字幕
+    chain: VideoAsset 或 AudioAsset → SpeechToText → SubtitleBurn.text；成片 → SubtitleBurn.video
+    must: 输入必须有音轨。SRT 可复制，烧字幕口接 text。
 
 nodes:
   TextAsset:
@@ -369,3 +374,54 @@ nodes:
       - { id: text, kind: text, required: optional }
     outputs:
       - { id: video, kind: video }
+
+  ImageCompare:
+    group: finish
+    label: 图像对比
+    exit: true
+    orphan: ignore
+    channel: null
+    run_tool: run_image_compare
+    purpose: 对比两张图片并选择一张继续下游。
+    when: 需要在两版首帧/参考图之间做 AB 选择。
+    when_not: 只有一张图时不要放；直接接到下游即可。缺一张图可等待，不要当失败。
+    fields: [before_url, after_url, selected, compare_mode, url, image_url]
+    in_chain_fields: [before_url, after_url]
+    in_chain_missing: 「{label}」缺少对比图片：请连接 A 或 B。
+    inputs:
+      - id: before
+        kind: image
+        required: optional
+        fields: [before_url]
+      - id: after
+        kind: image
+        required: optional
+        fields: [after_url]
+    outputs:
+      - { id: image, kind: image }
+
+  SpeechToText:
+    group: produce
+    label: 口播提取
+    exit: true
+    orphan: ignore
+    channel: asr
+    run_tool: run_speech_to_text
+    purpose: 从视频或音频提取口播全文、分段和 SRT。
+    when: 已有成片或口播文件，需要文案、字幕或给 LLM 改写。
+    when_not: 没有音轨的视频不要用；无声成片请跳过。
+    fields: [media_url, audio_url, clip_url, language, model_id, text, srt]
+    in_chain_fields: [media_url, audio_url, clip_url, result_url, preview_url]
+    in_chain_missing: 「{label}」缺少输入视频或音频：请连接 media 或 audio。
+    inputs:
+      - id: media
+        kind: video
+        required: optional
+        fields: [media_url, clip_url, result_url, preview_url]
+      - id: audio
+        kind: audio
+        required: optional
+        fields: [audio_url, media_url]
+    outputs:
+      - { id: text, kind: text }
+      - { id: srt, kind: text }

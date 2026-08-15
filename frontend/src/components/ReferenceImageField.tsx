@@ -7,6 +7,8 @@ type Props = {
   label?: string;
   hint?: string;
   placeholder?: string;
+  disabled?: boolean;
+  disabledHint?: string;
 };
 
 export default function ReferenceImageField({
@@ -15,6 +17,8 @@ export default function ReferenceImageField({
   label = "参考图",
   hint = "可粘贴 URL，或从本地上传",
   placeholder = "https://… 或上传后自动填入",
+  disabled = false,
+  disabledHint,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -36,20 +40,21 @@ export default function ReferenceImageField({
   }
 
   return (
-    <div className="ref-image-field">
+    <div className={`ref-image-field ${disabled ? "is-disabled" : ""}`}>
       <label>
         {label}
-        <span className="field-hint">{hint}</span>
+        <span className="field-hint">{disabled ? disabledHint || hint : hint}</span>
         <div className="ref-image-row">
           <input
             value={value}
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
+            disabled={disabled}
           />
           <button
             type="button"
             className="ghost"
-            disabled={busy}
+            disabled={busy || disabled}
             onClick={() => inputRef.current?.click()}
           >
             {busy ? "上传中…" : "上传"}
@@ -67,7 +72,7 @@ export default function ReferenceImageField({
       {value && (
         <div className="ref-image-preview">
           <img src={value} alt="参考图预览" />
-          <button type="button" className="ghost danger" onClick={() => onChange("")}>
+          <button type="button" className="ghost danger" disabled={disabled} onClick={() => onChange("")}>
             清除
           </button>
         </div>

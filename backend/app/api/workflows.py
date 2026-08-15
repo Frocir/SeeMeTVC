@@ -173,6 +173,7 @@ async def start_run(
         has_llm_model="llm" in kinds,
         has_tts_model="tts" in kinds,
         has_image_model="image" in kinds,
+        has_asr_model="asr" in kinds,
     )
     if reason:
         raise HTTPException(status_code=400, detail=reason)
