@@ -121,6 +121,10 @@ async def list_enabled_models(
                 capabilities=caps.as_dict(),
             )
         )
+    if want == "video":
+        preferred = [m for m in out if m.model_id == seedance.DEFAULT_VIDEO_MODEL_ID]
+        rest = [m for m in out if m.model_id != seedance.DEFAULT_VIDEO_MODEL_ID]
+        return preferred + rest
     return out
 
 

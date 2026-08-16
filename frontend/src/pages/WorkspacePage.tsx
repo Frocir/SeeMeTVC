@@ -30,12 +30,14 @@ export default function WorkspacePage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<Workflow | null>(null);
   const [newName, setNewName] = useState("");
-  const [newBrand, setNewBrand] = useState("SeeMe");
+  const [newBrand, setNewBrand] = useState("GlamPilot");
   const [newMode, setNewMode] = useState<"blank" | "template">("blank");
   const [newTpl, setNewTpl] = useState<WfTemplateId>("beauty_linear");
 
-  const modelId = models[0]?.model_id || "";
+  const modelId =
+    models.find((m) => m.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
 
   async function reload() {
     const [wfs, rs, ms] = await Promise.all([
@@ -64,7 +66,7 @@ export default function WorkspacePage() {
     });
   }, [drafts, runs, query, filter]);
 
-  async function openNew(template: WfTemplateId, name: string, brand?: string, prompt?: string) {
+  async function openNew(template: WfTemplateId | "blank", name: string, brand?: string, prompt?: string) {
     setBusy(true);
     setError("");
     try {
@@ -95,16 +97,19 @@ export default function WorkspacePage() {
     }
   }
 
-  async function remove(wf: Workflow) {
-    if (!window.confirm(`删除项目「${wf.name}」？画布、成片和素材都会删掉，且不可恢复。`)) {
-      setMenu(null);
-      return;
-    }
+  function askDelete(wf: Workflow) {
+    setMenu(null);
+    setPendingDelete(wf);
+  }
+
+  async function confirmDelete() {
+    const wf = pendingDelete;
+    if (!wf) return;
     setBusy(true);
     setError("");
     try {
       await api(`/api/workflows/${wf.id}`, { method: "DELETE" });
-      setMenu(null);
+      setPendingDelete(null);
       setDrafts((xs) => xs.filter((x) => x.id !== wf.id));
     } catch (e) {
       setError(e instanceof Error ? e.message : "删除失败");
@@ -175,7 +180,6 @@ export default function WorkspacePage() {
                       <img className="thumb-media" src={thumb} alt="" />
                     )
                   ) : null}
-                  <span className="thumb-corner">{aspect}</span>
                 </div>
               </button>
               <div className="card-info">
@@ -199,7 +203,7 @@ export default function WorkspacePage() {
                     <button type="button" disabled={busy} onClick={() => void duplicate(wf)}>
                       复制项目
                     </button>
-                    <button type="button" className="danger-btn" disabled={busy} onClick={() => void remove(wf)}>
+                    <button type="button" className="danger-btn" disabled={busy} onClick={() => askDelete(wf)}>
                       删除
                     </button>
                   </div>
@@ -283,13 +287,51 @@ export default function WorkspacePage() {
                 disabled={busy}
                 onClick={() =>
                   void openNew(
-                    newMode === "template" ? newTpl : "quick_shot",
+                    newMode === "template" ? newTpl : "blank",
                     newName.trim() || "未命名项目",
-                    newBrand.trim() || "SeeMe",
+                    newBrand.trim() || "GlamPilot",
                   )
                 }
               >
                 创建并打开
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {pendingDelete && (
+        <div
+          className="modal-back"
+          onClick={() => !busy && setPendingDelete(null)}
+          role="presentation"
+        >
+          <div
+            className="modal admin-confirm-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-project-title"
+          >
+            <h2 id="delete-project-title">确认删除？</h2>
+            <p>
+              删除「<strong>{pendingDelete.name}</strong>」后，画布、成片和素材都会清掉，且不可恢复。
+            </p>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy}
+                onClick={() => setPendingDelete(null)}
+              >
+                否
+              </button>
+              <button
+                type="button"
+                className="danger-solid"
+                disabled={busy}
+                onClick={() => void confirmDelete()}
+              >
+                {busy ? "删除中…" : "是"}
               </button>
             </div>
           </div>

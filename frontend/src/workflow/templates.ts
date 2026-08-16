@@ -82,7 +82,7 @@ export function defaultData(type: WfNodeType, modelId = ""): WfData {
         nodeType: "TextAsset",
         label: type === "BriefInput" ? "文案" : type === "ScenePlan" ? "文案" : label,
         textRole: "brief",
-        brand: "SeeMe",
+        brand: "GlamPilot",
         selling_points: "水光肌、持妆、气色",
         slogan: "看见更好的自己",
         prompt: "高端美妆广告短片，柔光特写",
@@ -99,7 +99,7 @@ export function defaultData(type: WfNodeType, modelId = ""): WfData {
       return {
         nodeType: "ImageToVideo",
         label: type === "ShotGenerate" ? NODE_TYPE_LABEL.ImageToVideo : label,
-        model_id: modelId,
+        model_id: modelId || "seedance-2.5",
         duration_seconds: DEFAULT_SHOT_SECONDS,
       };
     case "TextToImage":

@@ -14,9 +14,12 @@ from app.models import AgentMessage, AgentSession, Channel, User, Workflow
 from app.services import agent_gates as gates
 from app.services import graph_ops, llm as llm_svc
 from app.services import mcp_server
-from app.services.skills_loader import get_skill
+from app.services.skills_loader import DEFAULT_SKILL_ID, get_skill
 
 MAX_TOOL_ROUNDS = 12
+MAX_TOOL_ROUNDS_AUTO = 32
+MAX_TOOL_ROUNDS_GRAPH = 32
+MAX_TOOL_ROUNDS_LONG = 20
 USER_TURNS = 16
 STALE_RUNNING_SEC = 600
 _STUB_ORPHAN = json.dumps(
@@ -42,33 +45,51 @@ MODE_PROMPTS = {
         "不要出计划卡、不要等批准、不要在环与环之间停。"
         "四件套（品牌 / 卖点 / 时长 / 画幅）齐了就干；缺则先像售前问一轮，其余用当前 Skill 默认。"
         "开工前仍用一两句人话交代你会怎么拍，然后马上调用工具搭画布。"
-        "默认在现有画布上补，用户说重做才拆。扣费生成仍必须走确认卡。"
+        "一条 15 秒三镜片子通常 10–14 个节点。优先 expand_scenes_to_nodes，不要十几次 add_node 手搓。"
+        "画布已有完整链就 patch / connect / 出片，禁止再复制一套。用户说重做才删了重搭。"
+        "出片直接跑，不要再出扣费确认卡。"
     ),
     "plan": (
         "当前工作模式：Plan。先当售前主理人，再当执行导演。Skill 只决定美学。"
         "方案没谈妥之前禁止改画布。必须调用 propose_plan 出方案卡（Brief → 分镜 → 搭图），等用户点批准。"
-        "用户点开始某环后再做那一环；做完调用 complete_stage。搭图结束不要出片，等用户点开始出片。"
+        "用户点开始某环后禁止再调用 propose_plan，立刻改画布做这一环；做完调用 complete_stage。"
+        "搭图环只搭节点和连线，优先 expand_scenes_to_nodes；不要反复 get_graph，不要在搭图环写镜头。"
+        "搭图结束不要出片，等用户点开始出片。"
         "已有节点时方案里推荐在现有上补（rebuild=false）。按 Skill 问满风格、禁忌、是否口播。"
-        "扣费生成仍必须走确认卡。"
+        "用户点开始出片后直接 run_*，不要再出扣费确认卡，也不要让用户再确认一次。"
     ),
 }
 
 
 def normalize_work_mode(raw: str | None) -> str:
-    key = (raw or "plan").strip().lower()
-    return WORK_MODE_ALIASES.get(key, "plan")
+    key = (raw or "auto").strip().lower()
+    return WORK_MODE_ALIASES.get(key, "auto")
+
+
+def _max_tool_rounds(session: AgentSession) -> int:
+    if normalize_work_mode(getattr(session, "work_mode", "")) == "auto":
+        return MAX_TOOL_ROUNDS_AUTO
+    gate = gates.parse_gate(getattr(session, "pending_json", ""))
+    if not gate or not gate.get("executing"):
+        return MAX_TOOL_ROUNDS
+    stage = str(gate.get("stage") or "")
+    if stage == "graph":
+        return MAX_TOOL_ROUNDS_GRAPH
+    if stage in {"storyboard", "shoot"}:
+        return MAX_TOOL_ROUNDS_LONG
+    return MAX_TOOL_ROUNDS
 
 Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 PERSONA = (
-    "你是 SeeMeTVC 的片子主理人：用户像在找一支真人美妆广告团队，你负责接洽、出方案、再带团队去画布落地。"
+    "你是 GlamPilot 的片子主理人：用户像在找一支真人美妆广告团队，你负责接洽、出方案、再带团队去画布落地。"
     "不是客服机器人，也不是只会点按钮的脚本。先把片子想清楚，再动手。"
     "语气：面对面聊 brief 的售前导演。用「我」「咱们」；有判断、会给更好的拍法，但不油腻、不堆感叹号、不自称 AI、不说「已收到您的需求」。"
     "短句、口语、专业。好例子：「这支我建议 15 秒三镜，开场橱窗、中段涂抹、收在产品。你更想种草还是大片感？」"
     "坏例子：「请提供品牌、卖点、时长和画幅，以便我为您生成工作流。」一次只推进一件事，不要甩工具清单。"
     "方案没构思完不要改画布。谈妥后再调用工具，可以说「那我去画布上搭了」。"
     "改画布、连线、跑节点必须调用工具。不要声称已经改了画布或已经出片，除非对应工具已成功。"
-    "付费生成必须等用户点确认卡：确认前不要开始生成、不要扣费、不要催促；用「点一下确认我就去出」而不是系统提示腔。"
+    "只有方案卡和环节卡要等用户点。出片直接调用 run_*，不要再要用户确认扣费。"
     "搭完工作流（add_node / connect / expand_scenes_to_nodes）后必须调用 layout_graph 给节点排版，不要手填 x/y。"
     "用户说排版、整理、对齐、分开叠着的节点时，调用 layout_graph。"
     "用户说清空对话、新对话、忘掉刚才说的时，调用 clear_chat。不要在用户没要求时清空。清空只删聊天，不动画布。"
@@ -91,7 +112,13 @@ async def get_or_create_session(db: AsyncSession, *, workflow: Workflow, user: U
     result = await db.execute(select(AgentSession).where(AgentSession.workflow_id == workflow.id))
     row = result.scalar_one_or_none()
     if row is None:
-        row = AgentSession(workflow_id=workflow.id, user_id=user.id, status="idle")
+        row = AgentSession(
+            workflow_id=workflow.id,
+            user_id=user.id,
+            skill_id=DEFAULT_SKILL_ID,
+            work_mode="auto",
+            status="idle",
+        )
         db.add(row)
         await db.flush()
         return row
@@ -154,10 +181,41 @@ async def run_chat(
                 stale = True
         if not stale:
             raise RuntimeError("Agent 正在回复，请稍候")
-        session.status = "idle"
-        session.pending_json = ""
+        gate = gates.parse_gate(session.pending_json)
+        if gate:
+            gate["executing"] = False
+            gate["stop_requested"] = False
+            if gate.get("kind") == "plan":
+                session.status = "plan_pending"
+            else:
+                gate["kind"] = "stage"
+                session.status = "stage_pending"
+            session.pending_json = gates.dump_gate(gate)
+        else:
+            session.status = "idle"
+            session.pending_json = ""
     if session.status == "confirm_pending":
         raise RuntimeError("请先确认或取消当前的生成")
+    session.model_id = channel.model_id
+    if skill_id.strip():
+        session.skill_id = skill_id.strip()
+    else:
+        session.skill_id = ""
+    session.work_mode = normalize_work_mode(work_mode)
+    want = gates.match_stage_command(text)
+    if want and session.status != "plan_pending":
+        await _align_and_start_stage(
+            db,
+            user=user,
+            workflow=workflow,
+            session=session,
+            channel=channel,
+            selected_node_id=selected_node_id,
+            viewport=viewport,
+            emit=emit,
+            want=want,
+        )
+        return
     resume_after = ""
     if session.status in gates.GATE_STATUSES:
         resume_after = session.status
@@ -169,15 +227,9 @@ async def run_chat(
         }
         gate["executing"] = False
         session.pending_json = gates.dump_gate(gate)
-    session.model_id = channel.model_id
-    if skill_id.strip():
-        session.skill_id = skill_id.strip()
-    else:
-        session.skill_id = ""
-    session.work_mode = normalize_work_mode(work_mode)
     session.status = "running"
     if resume_after not in gates.GATE_STATUSES:
-        session.pending_json = ""
+        session.pending_json = session.pending_json if gates.parse_gate(session.pending_json) else ""
     db.add(
         AgentMessage(session_id=session.id, role="user", content=text.strip(), meta_json="")
     )
@@ -244,6 +296,9 @@ async def run_resume(
             viewport=viewport,
             emit=emit,
         )
+        return
+    if act == "back":
+        await _back_stage(db, session, emit)
         return
     if act == "revise":
         await _emit_gate(session, emit)
@@ -345,7 +400,7 @@ async def _loop(
     ctx = mcp_server.McpContext(db=db, user=user, workflow=workflow, viewport=viewport, emit=emit)
     wrote = False
     try:
-        for _ in range(MAX_TOOL_ROUNDS):
+        for _ in range(_max_tool_rounds(session)):
             messages[:], stubs = repair_tool_messages(messages)
             await _persist_tool_stubs(db, session, stubs)
             await db.refresh(session)
@@ -355,7 +410,8 @@ async def _loop(
             if live and live.get("stop_requested"):
                 await _hold_stage(db, session, emit, completed=False)
                 return
-            allowed = gates.allowed_tools(session)
+            graph = graph_ops.parse_graph(workflow.graph_json)
+            allowed = gates.allowed_tools(session, graph)
             tools = mcp_server.openai_tools(allowed)
             system = _system_prompt(session, workflow, selected_id=selected_node_id)
             acc_text: list[str] = []
@@ -404,7 +460,7 @@ async def _loop(
                         name = str(c.get("name") or "")
                         args = c.get("arguments") if isinstance(c.get("arguments"), dict) else {}
                         call_id = str(c.get("id") or name)
-                        deny = gates.deny_reason(session, name, args)
+                        deny = gates.deny_reason(session, name, args, graph)
                         if deny:
                             result = json.dumps({"error": deny}, ensure_ascii=False)
                             messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
@@ -419,75 +475,6 @@ async def _loop(
                             await emit("tool", {"name": name, "status": "error", "detail": deny[:240]})
                             await db.commit()
                             continue
-                        if name in mcp_server.RUN_TOOLS:
-                            try:
-                                await db.refresh(workflow)
-                                ctx.workflow = workflow
-                            except Exception:
-                                pass
-                            graph = graph_ops.parse_graph(workflow.graph_json)
-                            try:
-                                est = await mcp_server.estimate_run_cost(db, graph, str(args.get("node_id") or ""))
-                            except Exception as exc:  # noqa: BLE001
-                                result = json.dumps({"error": str(exc)}, ensure_ascii=False)
-                                messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
-                                db.add(
-                                    AgentMessage(
-                                        session_id=session.id,
-                                        role="tool",
-                                        content=result[:8000],
-                                        meta_json=json.dumps({"tool_call_id": call_id, "name": name}, ensure_ascii=False),
-                                    )
-                                )
-                                await emit("tool", {"name": name, "status": "error", "detail": str(exc)[:240]})
-                                continue
-                            if est.get("needs_confirm"):
-                                from app.config import get_settings
-
-                                await _stub_remaining_calls(
-                                    db, session, messages, calls, except_id=call_id
-                                )
-                                conf = {
-                                    **est,
-                                    "unit": get_settings().balance_unit_label,
-                                    "message": "确认前不会开始生成，也不会扣费。",
-                                }
-                                session.status = "confirm_pending"
-                                prev = gates.parse_gate(session.pending_json) or {}
-                                session.pending_json = json.dumps(
-                                    {
-                                        "tool_name": name,
-                                        "tool_call_id": call_id,
-                                        "arguments": args,
-                                        "messages": messages,
-                                        "confirm": conf,
-                                        "kind": prev.get("kind") or "plan_run",
-                                        "stage": prev.get("stage") or "shoot",
-                                        "plan": prev.get("plan") or gates.normalize_plan(None),
-                                        "completed": prev.get("completed") or [],
-                                        "executing": True,
-                                    },
-                                    ensure_ascii=False,
-                                )
-                                await db.commit()
-                                try:
-                                    await db.refresh(workflow)
-                                    ctx.workflow = workflow
-                                except Exception:
-                                    pass
-                                await mcp_server.maybe_autolayout(ctx)
-                                await emit(
-                                    "tool",
-                                    {
-                                        "name": name,
-                                        "status": "waiting",
-                                        "detail": mcp_server.tool_progress_detail(name, "waiting"),
-                                    },
-                                )
-                                await emit("confirm_required", conf)
-                                await emit("done", {"status": "confirm_pending"})
-                                paused = True
-                                break
                         await emit(
                             "tool",
                             {
@@ -573,12 +560,18 @@ async def _loop(
         ctx.workflow = workflow
         await mcp_server.maybe_autolayout(ctx)
         if gates.parse_gate(session.pending_json):
-            await _hold_stage(db, session, emit, completed=False)
-            await emit("error", {"detail": "这一环工具轮次过多，先停在这里"})
+            await _finish_round_budget(db, session, emit, wrote=wrote)
             return
+        text = (
+            "画布先收到这里。再说一声我从现有节点继续，不会再堆一套。"
+            if wrote
+            else "这一轮工具次数用完了。再说一声我从现有画布继续。"
+        )
+        db.add(AgentMessage(session_id=session.id, role="assistant", content=text, meta_json=""))
+        await db.commit()
+        await emit("token", {"text": text})
         session.status = "idle"
         await db.commit()
-        await emit("error", {"detail": "工具调用轮次过多，已停止"})
         await emit("done", {"status": "idle"})
     except Exception as exc:  # noqa: BLE001
         if gates.parse_gate(session.pending_json):
@@ -601,6 +594,15 @@ def _system_prompt(session: AgentSession, workflow: Workflow, selected_id: str) 
         parts.append(f"当前 Skill：{skill.name}\n\n{skill.full}")
     graph = graph_ops.parse_graph(workflow.graph_json)
     parts.append("画布摘要：\n" + graph_ops.graph_summary(graph, selected_id=selected_id))
+    node_n = len([n for n in (graph.get("nodes") or []) if isinstance(n, dict)])
+    if normalize_work_mode(session.work_mode) == "auto":
+        auto_note = (
+            "Auto 搭图：15 秒三镜大约 10–14 个节点。优先 expand_scenes_to_nodes。"
+            "一次把该加的节点加完再 connect、layout_graph，不要一轮只加一个。"
+        )
+        if node_n >= 18:
+            auto_note += f" 当前已有 {node_n} 个节点，停止新建，只整理、补连线或出片。"
+        parts.append(auto_note)
     note = gates.gate_system_note(session, graph)
     if note:
         parts.append(note)
@@ -749,6 +751,7 @@ def _normalize_resume_action(action: str, accept: bool, status: str) -> str:
         "stop": "stop",
         "skip_to_auto": "skip_to_auto",
         "revise": "revise",
+        "back": "back",
     }
     if key in aliases:
         return aliases[key]
@@ -795,7 +798,40 @@ async def _pause_plan(
     await emit("done", {"status": "plan_pending"})
 
 
-async def _hold_stage(db: AsyncSession, session: AgentSession, emit: Emit, *, completed: bool) -> None:
+async def _finish_round_budget(
+    db: AsyncSession, session: AgentSession, emit: Emit, *, wrote: bool
+) -> None:
+    if wrote:
+        text = "这一环已经改到画布上了，先收到这里。再点开始我会从现有画布继续。"
+        db.add(
+            AgentMessage(
+                session_id=session.id,
+                role="assistant",
+                content=text,
+                meta_json="",
+            )
+        )
+        await db.commit()
+        await emit("token", {"text": text})
+        await _hold_stage(db, session, emit, completed=False, resume=True)
+        return
+    text = "这一环还没搭完。再点开始我会从现有画布继续，不会推倒重来。"
+    db.add(
+        AgentMessage(
+            session_id=session.id,
+            role="assistant",
+            content=text,
+            meta_json="",
+        )
+    )
+    await db.commit()
+    await emit("token", {"text": text})
+    await _hold_stage(db, session, emit, completed=False, resume=True)
+
+
+async def _hold_stage(
+    db: AsyncSession, session: AgentSession, emit: Emit, *, completed: bool, resume: bool = False
+) -> None:
     gate = gates.parse_gate(session.pending_json)
     if not gate:
         session.status = "idle"
@@ -810,13 +846,23 @@ async def _hold_stage(db: AsyncSession, session: AgentSession, emit: Emit, *, co
             done.append(cur)
         nxt = gates.next_stage(cur)
         if nxt is None:
-            session.status = "idle"
-            session.pending_json = ""
+            gate["stage"] = cur
+            gate["completed"] = done
+            gate["resume"] = True
+            gate["kind"] = "stage"
+            gate["executing"] = False
+            gate["stop_requested"] = False
+            session.status = "stage_pending"
+            session.pending_json = gates.dump_gate(gate)
             await db.commit()
-            await emit("done", {"status": "idle"})
+            await _emit_gate(session, emit)
+            await emit("done", {"status": "stage_pending"})
             return
         gate["stage"] = nxt
         gate["completed"] = done
+        gate["resume"] = False
+    elif resume:
+        gate["resume"] = True
     gate["kind"] = "stage"
     gate["executing"] = False
     gate["stop_requested"] = False
@@ -835,9 +881,10 @@ async def _finish_text_turn(
     wrote: bool,
     resume_after: str,
 ) -> None:
+    _ = wrote
     gate = gates.parse_gate(session.pending_json)
-    if gate and gate.get("executing") and wrote:
-        await _hold_stage(db, session, emit, completed=True)
+    if gate and gate.get("executing"):
+        await _hold_stage(db, session, emit, completed=False, resume=True)
         return
     if resume_after in gates.GATE_STATUSES and gate:
         session.status = resume_after
@@ -865,6 +912,20 @@ async def _finish_text_turn(
     await emit("done", {"status": "idle"})
 
 
+def _plan_history_text(plan: dict[str, Any], *, approved: bool) -> str:
+    title = str(plan.get("title") or "片子方案")
+    lines = [f"已批准方案：{title}" if approved else f"方案：{title}"]
+    if plan.get("rebuild"):
+        lines.append("方式：重搭画布")
+    for item in plan.get("stages") or []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(str(item.get("title") or item.get("id") or ""))
+        for point in item.get("points") or []:
+            lines.append(f"- {point}")
+    return "\n".join(line for line in lines if str(line).strip()).strip()
+
+
 async def _approve_plan(db: AsyncSession, session: AgentSession, emit: Emit) -> None:
     gate = gates.parse_gate(session.pending_json) or {
         "kind": "stage",
@@ -877,10 +938,94 @@ async def _approve_plan(db: AsyncSession, session: AgentSession, emit: Emit) -> 
     gate["executing"] = False
     session.status = "stage_pending"
     session.pending_json = gates.dump_gate(gate)
+    plan = gates.normalize_plan(gate.get("plan") if isinstance(gate.get("plan"), dict) else None)
     db.add(AgentMessage(session_id=session.id, role="user", content="批准计划", meta_json=""))
+    db.add(
+        AgentMessage(
+            session_id=session.id,
+            role="assistant",
+            content=_plan_history_text(plan, approved=True),
+            meta_json=json.dumps({"kind": "plan", "approved": True, "plan": plan}, ensure_ascii=False),
+        )
+    )
     await db.commit()
     await _emit_gate(session, emit)
     await emit("done", {"status": "stage_pending"})
+
+
+async def _back_stage(db: AsyncSession, session: AgentSession, emit: Emit) -> None:
+    gate = gates.parse_gate(session.pending_json)
+    if not gate:
+        session.status = "idle"
+        session.pending_json = ""
+        await db.commit()
+        await emit("done", {"status": "idle"})
+        return
+    cur = str(gate.get("stage") or "brief")
+    prev = gates.prev_stage(cur)
+    if prev is None:
+        await _emit_gate(session, emit)
+        await emit("done", {"status": session.status})
+        return
+    idx = gates.STAGES.index(prev)
+    gate["stage"] = prev
+    gate["completed"] = [s for s in gates.STAGES[:idx]]
+    gate["resume"] = True
+    gate["kind"] = "stage"
+    gate["executing"] = False
+    gate["stop_requested"] = False
+    session.status = "stage_pending"
+    session.pending_json = gates.dump_gate(gate)
+    title = gates.STAGE_TITLES.get(prev, prev)
+    db.add(AgentMessage(session_id=session.id, role="user", content=f"返回{title}", meta_json=""))
+    await db.commit()
+    await _emit_gate(session, emit)
+    await emit("done", {"status": "stage_pending"})
+
+
+async def _align_and_start_stage(
+    db: AsyncSession,
+    *,
+    user: User,
+    workflow: Workflow,
+    session: AgentSession,
+    channel: Channel,
+    selected_node_id: str,
+    viewport: tuple[float, float],
+    emit: Emit,
+    want: str,
+) -> None:
+    gate = gates.parse_gate(session.pending_json)
+    if not gate:
+        idx = gates.STAGES.index(want) if want in gates.STAGES else 0
+        gate = {
+            "kind": "stage",
+            "stage": want,
+            "plan": gates.normalize_plan(None),
+            "completed": [s for s in gates.STAGES[:idx]],
+            "executing": False,
+        }
+    elif str(gate.get("stage") or "") != want:
+        idx = gates.STAGES.index(want) if want in gates.STAGES else 0
+        gate["stage"] = want
+        gate["completed"] = [s for s in gates.STAGES[:idx]]
+        gate["resume"] = True
+    gate["kind"] = "stage"
+    gate["executing"] = False
+    gate["stop_requested"] = False
+    session.status = "stage_pending"
+    session.pending_json = gates.dump_gate(gate)
+    await db.commit()
+    await _start_stage(
+        db,
+        user=user,
+        workflow=workflow,
+        session=session,
+        channel=channel,
+        selected_node_id=selected_node_id,
+        viewport=viewport,
+        emit=emit,
+    )
 
 
 async def _start_stage(
@@ -970,7 +1115,7 @@ async def _skip_to_auto(
         AgentMessage(
             session_id=session.id,
             role="user",
-            content="已切到 Auto，跳过剩余创作闸门，继续把画布搭完。扣费仍要确认卡。",
+            content="已切到 Auto，跳过剩余创作闸门，继续把画布搭完。",
             meta_json="",
         )
     )

@@ -59,6 +59,45 @@ def apply_schema_updates(sync_conn) -> None:
             sync_conn.execute(
                 text("INSERT INTO schema_flags (name, value) VALUES ('agent_work_mode_v2', '1')")
             )
+    if "agent_sessions" in names and "workflows" in names:
+        flagged = sync_conn.execute(
+            text("SELECT value FROM schema_flags WHERE name = 'purge_orphan_project_rows_v1'")
+        ).first()
+        if not flagged:
+            sync_conn.execute(
+                text(
+                    "DELETE FROM agent_messages WHERE session_id IN ("
+                    "SELECT id FROM agent_sessions WHERE workflow_id NOT IN (SELECT id FROM workflows))"
+                )
+            )
+            sync_conn.execute(
+                text(
+                    "DELETE FROM agent_sessions WHERE workflow_id NOT IN (SELECT id FROM workflows)"
+                )
+            )
+            if "graph_revisions" in names:
+                sync_conn.execute(
+                    text(
+                        "DELETE FROM graph_revisions WHERE workflow_id NOT IN (SELECT id FROM workflows)"
+                    )
+                )
+            if "asset_versions" in names:
+                sync_conn.execute(
+                    text(
+                        "DELETE FROM asset_versions WHERE workflow_id NOT IN (SELECT id FROM workflows)"
+                    )
+                )
+            if "project_assets" in names:
+                sync_conn.execute(
+                    text(
+                        "DELETE FROM project_assets WHERE workflow_id NOT IN (SELECT id FROM workflows)"
+                    )
+                )
+            sync_conn.execute(
+                text(
+                    "INSERT INTO schema_flags (name, value) VALUES ('purge_orphan_project_rows_v1', '1')"
+                )
+            )
 
 
 async def migrate_project_space(db: AsyncSession) -> None:

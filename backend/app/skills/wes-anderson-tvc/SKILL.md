@@ -1,5 +1,6 @@
 ---
 name: wes-anderson-tvc
+title: 韦斯安德森风
 description: >-
   韦斯·安德森风格美妆/产品 TVC 导演。当用户要对称构图、复古配色、舞台感、安德森风广告短片时使用。
   流程：问清 → 角色与场景 → 分镜 → 用节点工具搭图并生成。非 LibTV 副本。
@@ -7,7 +8,7 @@ description: >-
 
 # 韦斯·安德森风格 TVC（自研）
 
-本 Skill 是 SeeMeTVC 自研导演规程，**不是** LibTV / libtv-skill-pro 的复制件。用现有画布节点完成，不调用外部 LibTV API。
+本 Skill 是 GlamPilot 自研导演规程，**不是** LibTV / libtv-skill-pro 的复制件。用现有画布节点完成，不调用外部 LibTV API。
 
 ## 美学（写进 Brief 和单镜 prompt）
 
@@ -27,7 +28,7 @@ description: >-
 2. **角色与场景**：用文字描述主角造型、场景（对称走廊 / 糖果色柜台 / 俯视桌面等）。写入 `TextAsset` 或 `LlmText`（brief）。
 3. **分镜**：按时长拆 1–4 镜。每镜：对称构图、色块、产品位置、镜头运动、旁白。用 `LlmText`（shot）或文本节点写出 `prompt` + `narration`。
 4. **搭图连线**：`add_node` / `connect` / `patch_node`。拓扑与必接端口以节点规约为准（系统提示里的卡片），不要另造一套链。搭完后调用 `layout_graph` 排版，不要手填坐标。
-5. **生成**：先跑 LLM；扣费的图生视频必须等用户确认卡，不要连催。
+5. **生成**：先跑 LLM，再直接跑图生视频。不要再出扣费确认卡。
 
 ## 工具纪律
 

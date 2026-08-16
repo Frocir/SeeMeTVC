@@ -161,7 +161,8 @@ export default function WorkflowCanvasPage() {
   const runningRef = useRef(false);
   /** Suppress auto-queue after manual/template runs so we don't double-hit Agnes. */
   const suppressAutoUntil = useRef(0);
-  const modelId = models[0]?.model_id || "";
+  const modelId =
+    models.find((m) => m.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
   const llmModelId = llmModels[0]?.model_id || "";
   const ttsModelId = ttsModels[0]?.model_id || "tts-1";
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<WfData>>([]);
@@ -182,6 +183,16 @@ export default function WorkflowCanvasPage() {
       navigate("/", { replace: true });
       return;
     }
+    setWorkflowId(routeId);
+    setNodes([]);
+    setEdges([]);
+    setSelectedId(null);
+    setRun(null);
+    setAgentLocked(false);
+    setError("");
+    lastSavedRef.current = "";
+    fingerprints.current = {};
+    let cancelled = false;
     void Promise.all([
       api<ModelOption[]>("/api/models?kind=video"),
       api<ModelOption[]>("/api/models?kind=llm"),
@@ -192,13 +203,14 @@ export default function WorkflowCanvasPage() {
       api<NodeContracts>("/api/agent/node-contracts"),
     ])
       .then(([m, llm, tts, imgs, asr, wf, cons]) => {
+        if (cancelled || wf.id !== routeId) return;
         setModels(m);
         setLlmModels(llm);
         setTtsModels(tts);
         setImageModels(imgs);
         setAsrModels(asr);
         setContracts(cons);
-        const mid = m[0]?.model_id || "";
+        const mid = m.find((x) => x.model_id === "seedance-2.5")?.model_id || m[0]?.model_id || "";
         setWorkflowId(wf.id);
         setName(wf.name);
         const g = fromApiGraph(wf.graph, mid);
@@ -217,7 +229,12 @@ export default function WorkflowCanvasPage() {
           window.setTimeout(() => setGuideOpen(true), 480);
         }
       })
-      .catch(() => navigate("/", { replace: true }));
+      .catch(() => {
+        if (!cancelled) navigate("/", { replace: true });
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeId]);
 
@@ -354,6 +371,7 @@ export default function WorkflowCanvasPage() {
   }
 
   async function startRun(targetIds?: string[], note?: string) {
+    if (agentLocked) return;
     const blocked = cannotRunReason(nodes, edges, {
       modelId,
       llmReady: llmModels.length > 0,
@@ -431,7 +449,7 @@ export default function WorkflowCanvasPage() {
     try {
       await saveDraft({ silent: true });
       const out = await expandScenesToNodes(workflowId, selectedId, mode);
-      const mid = models[0]?.model_id || "";
+      const mid = models.find((x) => x.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
       const g = fromApiGraph(out.graph, mid);
       setNodes(g.nodes);
       setEdges(g.edges);
@@ -447,7 +465,7 @@ export default function WorkflowCanvasPage() {
   }
 
   async function layoutAll() {
-    if (busy || agentLocked || nodes.length === 0) return;
+    if (busy || nodes.length === 0) return;
     const next = applyDagLayout(nodes, edges);
     setNodes(next);
     nodesRef.current = next;
@@ -466,7 +484,7 @@ export default function WorkflowCanvasPage() {
     setError("");
     try {
       const wf = await api<Workflow>(`/api/workflows/${workflowId}/undo`, { method: "POST" });
-      const mid = models[0]?.model_id || "";
+      const mid = models.find((x) => x.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
       const g = fromApiGraph(wf.graph, mid);
       setNodes(g.nodes);
       setEdges(g.edges);
@@ -652,7 +670,7 @@ export default function WorkflowCanvasPage() {
               取消
             </button>
           )}
-          <button type="button" className="cv-chip-btn" disabled={busy} onClick={() => void saveDraft()}>
+          <button type="button" className="cv-chip-btn" disabled={busy || agentLocked} onClick={() => void saveDraft()}>
             保存
           </button>
           <button type="button" className="cv-chip-btn" disabled={busy || agentLocked} onClick={() => void undoDraft()}>
@@ -661,7 +679,7 @@ export default function WorkflowCanvasPage() {
           <button
             type="button"
             className="cv-chip-btn"
-            disabled={busy || agentLocked || nodes.length === 0}
+            disabled={busy || nodes.length === 0}
             title="按连线关系重新排列全部节点"
             onClick={() => void layoutAll()}
           >
@@ -670,6 +688,7 @@ export default function WorkflowCanvasPage() {
           <button
             type="button"
             className="cv-chip-btn"
+            disabled={busy || agentLocked}
             onClick={() => setGuideOpen(true)}
             title="新手教程演示"
           >
@@ -678,7 +697,7 @@ export default function WorkflowCanvasPage() {
           <button
             type="button"
             className="cv-chip-btn primary"
-            disabled={busy || (!!run && isActiveRun(run.status))}
+            disabled={busy || agentLocked || (!!run && isActiveRun(run.status))}
             title={runBlock || undefined}
             data-tour="run"
             onClick={() => void startRun(undefined, "正在生成整条流程")}
@@ -736,12 +755,13 @@ export default function WorkflowCanvasPage() {
             </div>
             {leftTab === "agent" ? (
               <TvcAgentPanel
-                workflowId={workflowId}
+                key={routeId}
+                workflowId={Number.isFinite(routeId) && routeId > 0 ? routeId : null}
                 models={llmModels}
                 selectedNodeId={selectedId}
                 viewport={viewport}
                 onGraph={(graph: AgentGraph) => {
-                  const mid = models[0]?.model_id || "";
+                  const mid = models.find((x) => x.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
                   const g = fromApiGraph(graph, mid);
                   setNodes(g.nodes);
                   setEdges(g.edges);
@@ -779,6 +799,7 @@ export default function WorkflowCanvasPage() {
                               const extra: Partial<WfData> = {};
                               if (p.type === "LlmText") extra.model_id = llmModelId;
                               if (p.type === "TextToImage") extra.model_id = imageModels[0]?.model_id;
+                              if (p.type === "ImageToVideo") extra.model_id = modelId;
                               if (p.type === "TtsSpeak") extra.model_id = ttsModelId;
                               if (p.type === "SpeechToText") extra.model_id = asrModels[0]?.model_id;
                               addNode(p.type, extra);
@@ -812,7 +833,7 @@ export default function WorkflowCanvasPage() {
                     setLeftTab("nodes");
                   }}
                   onApplyGraph={(graph, nodeId) => {
-                    const mid = models[0]?.model_id || modelId;
+                    const mid = models.find((x) => x.model_id === "seedance-2.5")?.model_id || modelId;
                     const g = fromApiGraph(
                       graph as { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> },
                       mid,

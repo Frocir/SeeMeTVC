@@ -209,7 +209,7 @@ class WorkflowExpandScenesOut(BaseModel):
 class WorkflowOut(BaseModel):
     id: int
     name: str
-    brand: str = "SeeMe"
+    brand: str = "GlamPilot"
     cover_url: str | None = None
     graph: dict
     created_at: datetime
@@ -279,7 +279,7 @@ class AgentChatIn(BaseModel):
     workflow_id: int
     model_id: str = ""
     skill_id: str = ""
-    work_mode: str = "plan"
+    work_mode: str = "auto"
     text: str = Field(min_length=1, max_length=8000)
     selected_node_id: str = ""
     viewport: AgentViewportIn | None = None

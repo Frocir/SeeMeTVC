@@ -1,4 +1,4 @@
-# SeeMeTVC
+# GlamPilot
 
 美妆 / 硬件短片工作台：左侧 **TVC Agent** 驱动中间节点画布出片。Agent = LLM + 进程内 MCP + Skill + 对话记忆。画布仍可手搭；模板与 Lookbook 分 **美学** 和 **硬件 / 科创** 两套。人物一级库本轮是空页，素材请在项目里上传。
 
@@ -88,7 +88,7 @@ FastAPI  backend/
 - Agent 不另写出片引擎。`run_*` 就是现有节点执行，扣费仍走工作流 run。
 - MCP **不开放端口**，只给本进程 Agent 调。
 - Agent 回合内画布只读；每步改图立刻写入 `graph_json`，SSE 推全图。回合外仍手动保存。点发送时若有未保存手改，会先保存再开跑。
-- 会扣费的文生图 / 图生视频先出**对话内确认卡**（不弹系统对话框），暂停态落库，刷新后仍可确认 / 取消。
+- 文生图 / 图生视频在用户点「开始出片」后直接跑并扣积分，不再单独出扣费确认卡。
 - 发给上游的对话会整理工具回执：历史只保留文字，当前这一轮才带成对的 `tool_calls`。画布状态在 system 里。
 
 ## 已经具备
@@ -110,14 +110,14 @@ FastAPI  backend/
 **TVC Agent**
 
 - 每项目一条对话线程，刷新还在；可清空对话（画布不动）。
-- 工作模式 **Auto / Plan**（默认 Plan）：Plan 先出方案卡，按 Brief → 分镜 → 搭图逐环点开始；Auto 四件套齐了就干。扣费确认卡两种模式都不跳。
+- 工作模式 **Auto / Plan**（默认 Auto）：Auto 四件套齐了就干；Plan 先出方案卡，按 Brief → 分镜 → 搭图 → 出片逐环点开始。出片不再单独确认扣费。
 - 默认对话模型：**DeepSeek-V4-Pro**（可在面板换已启用的 LLM 渠道）。
-- Skill 下拉：`seedance-tvc`（默认，美妆 / 硬件短片导演）、`wes-anderson-tvc` 等，规程在 `backend/app/skills/*/SKILL.md`。
+- Skill 下拉（界面显示中文名）：**电影及品牌短片**（默认，`seedance-tvc`）、**通用需求型**（`grill-me`）、**韦斯安德森风**（`wes-anderson-tvc`）。规程在 `backend/app/skills/*/SKILL.md`。
 - 图工具：`get_graph` / `add_node` / `patch_node` / `connect` / `delete_node` / `layout_graph`。
 - 计划：`propose_plan` / `complete_stage`（Plan 闸门按环白名单禁工具）。
 - 素材：`get_node_output` / `list_asset_versions` / `send_asset_to_canvas` / `expand_scenes_to_nodes`（反推分镜展开）。
 - 执行：每种可跑节点一个 `run_*`（含 `run_text_to_image` / `run_image_to_video` / `run_video_mux` / `run_video_reverse_prompt` 等）。
-- 流式：字、工具过程、画布更新、方案卡 / 环节卡、确认卡。
+- 流式：字、工具过程、画布更新、方案卡 / 环节卡。
 - 顶栏撤销（服务端快照）。
 
 ## 暂不具备，或明显偏弱
@@ -126,7 +126,7 @@ FastAPI  backend/
 - 没有跨项目记忆、没有 Skill 商店。
 - 人物一级库是空页；请在项目里上传图片。
 - 两个浏览器标签同时改同一项目会后写覆盖，没有合并。
-- 出片 SSE 可能被网关超时掐断；确认卡刷新可续。Agent 侧已做 12s keepalive，反向代理仍建议加大超时。
+- 出片 SSE 可能被网关超时掐断。Agent 侧已做 12s keepalive，反向代理仍建议加大超时。
 - `connect` 的端口合法性比画布手连要松。
 - 无自动化测试覆盖 Agent。
 - 上线前密钥、限流、权限还要加固。

@@ -118,7 +118,7 @@ def default_data(node_type: str) -> dict[str, Any]:
             "nodeType": "TextAsset",
             "label": "文案",
             "textRole": "brief",
-            "brand": "SeeMe",
+            "brand": "GlamPilot",
             "selling_points": "水光肌、持妆、气色",
             "slogan": "看见更好的自己",
             "prompt": "高端美妆广告短片，柔光特写",
@@ -133,7 +133,12 @@ def default_data(node_type: str) -> dict[str, Any]:
     if nt == "TextToImage":
         return {"nodeType": "TextToImage", "label": "出图", "model_id": ""}
     if nt == "ImageToVideo":
-        return {"nodeType": "ImageToVideo", "label": "出视频", "duration_seconds": 5}
+        return {
+            "nodeType": "ImageToVideo",
+            "label": "出视频",
+            "duration_seconds": 5,
+            "model_id": "seedance-2.5",
+        }
     if nt == "VideoTrim":
         return {"nodeType": "VideoTrim", "label": "裁视频", "trim_start": 0, "trim_end": 5}
     if nt == "VideoMux":
@@ -203,12 +208,13 @@ def new_node_id() -> str:
 def graph_summary(graph: dict, *, selected_id: str = "") -> str:
     lines: list[str] = []
     last_err = ""
-    for n in graph.get("nodes") or []:
-        if not isinstance(n, dict):
-            continue
+    typed: dict[str, int] = defaultdict(int)
+    nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
+    for n in nodes:
         nid = str(n.get("id") or "")
         data = n.get("data") if isinstance(n.get("data"), dict) else {}
         nt = normalize_type(n)
+        typed[nt] += 1
         label = str(data.get("label") or nt)
         err = str(data.get("runError") or "")
         st = str(data.get("runStatus") or "")
@@ -216,10 +222,35 @@ def graph_summary(graph: dict, *, selected_id: str = "") -> str:
         lines.append(f"- {nid} {nt} 「{label}」{extra}")
         if err:
             last_err = f"{label}: {err[:160]}"
-    body = "\n".join(lines) if lines else "（空画布）"
+    if len(nodes) > 20:
+        counts = "、".join(f"{k}×{v}" for k, v in sorted(typed.items()))
+        head = lines[:8]
+        tail = lines[-4:] if len(lines) > 12 else []
+        body = (
+            f"共 {len(nodes)} 个节点，已经过多，禁止再批量 add_node。类型：{counts}\n"
+            + "\n".join(head)
+            + ("\n- …\n" + "\n".join(tail) if tail else "")
+        )
+    else:
+        body = "\n".join(lines) if lines else "（空画布）"
+    elines: list[str] = []
+    for e in graph.get("edges") or []:
+        if not isinstance(e, dict):
+            continue
+        src = str(e.get("source") or "")
+        tgt = str(e.get("target") or "")
+        if not src or not tgt:
+            continue
+        sh = str(e.get("sourceHandle") or "")
+        th = str(e.get("targetHandle") or "")
+        elines.append(f"- {src}:{sh} → {tgt}:{th}" if sh or th else f"- {src} → {tgt}")
+    if len(elines) > 24:
+        edges_body = f"共 {len(elines)} 条连线\n" + "\n".join(elines[:12]) + "\n- …"
+    else:
+        edges_body = "\n".join(elines) if elines else "（无连线）"
     sel = selected_id.strip() or "无"
     err_line = last_err or "无"
-    return f"节点:\n{body}\n选中: {sel}\n最近错误: {err_line}"
+    return f"节点:\n{body}\n连线:\n{edges_body}\n选中: {sel}\n最近错误: {err_line}"
 
 
 def slim_graph(graph: dict) -> dict:

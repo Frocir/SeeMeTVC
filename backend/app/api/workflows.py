@@ -3,12 +3,23 @@ import json
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user
-from app.models import Channel, ProjectAsset, User, Workflow, WorkflowRun, WorkflowRunStatus
+from app.models import (
+    AgentMessage,
+    AgentSession,
+    AssetVersion,
+    Channel,
+    GraphRevision,
+    ProjectAsset,
+    User,
+    Workflow,
+    WorkflowRun,
+    WorkflowRunStatus,
+)
 from app.schemas import (
     ProjectAssetCopyIn,
     ProjectAssetCreateIn,
@@ -72,7 +83,7 @@ def _workflow_out(wf: Workflow, thumb: str | None = None) -> WorkflowOut:
     return WorkflowOut(
         id=wf.id,
         name=wf.name,
-        brand=wf.brand or "SeeMe",
+        brand=wf.brand or "GlamPilot",
         cover_url=cover,
         graph=graph,
         created_at=wf.created_at,
@@ -122,6 +133,21 @@ async def list_workflows(
     return [_workflow_out(w, thumb=thumbs.get(w.id)) for w in wfs]
 
 
+async def _purge_workflow_children(db: AsyncSession, workflow_id: int) -> None:
+    """SQLite can reuse a deleted project's id; drop leftover chat/assets first."""
+    sessions = (
+        await db.execute(select(AgentSession).where(AgentSession.workflow_id == workflow_id))
+    ).scalars().all()
+    session_ids = [s.id for s in sessions]
+    if session_ids:
+        await db.execute(delete(AgentMessage).where(AgentMessage.session_id.in_(session_ids)))
+        await db.execute(delete(AgentSession).where(AgentSession.workflow_id == workflow_id))
+    await db.execute(delete(GraphRevision).where(GraphRevision.workflow_id == workflow_id))
+    await db.execute(delete(AssetVersion).where(AssetVersion.workflow_id == workflow_id))
+    await db.execute(delete(ProjectAsset).where(ProjectAsset.workflow_id == workflow_id))
+    await db.execute(delete(WorkflowRun).where(WorkflowRun.workflow_id == workflow_id))
+
+
 @router.post("", response_model=WorkflowOut)
 async def create_workflow(
     body: WorkflowCreateIn,
@@ -137,6 +163,8 @@ async def create_workflow(
         graph_json=_graph_dumps(graph),
     )
     db.add(wf)
+    await db.flush()
+    await _purge_workflow_children(db, wf.id)
     await db.commit()
     await db.refresh(wf)
     await sync_from_graph(db, wf)
@@ -446,9 +474,7 @@ async def delete_workflow(
     ).scalars().all()
     for run in runs:
         urls.append(run.result_url)
-        await db.delete(run)
-    for asset in assets:
-        await db.delete(asset)
+    await _purge_workflow_children(db, wf.id)
     await db.delete(wf)
     await db.commit()
     for path in collect_upload_paths(*urls):

@@ -186,12 +186,12 @@ def brand_from_graph(graph_json: str) -> str:
     try:
         graph = json.loads(graph_json or "{}")
     except json.JSONDecodeError:
-        return "SeeMe"
+        return "GlamPilot"
     for node in graph.get("nodes") or []:
         data = (node.get("data") or {}) if isinstance(node, dict) else {}
         if data.get("textRole") == "brief" and isinstance(data.get("brand"), str) and data["brand"].strip():
             return data["brand"].strip()
-    return "SeeMe"
+    return "GlamPilot"
 
 
 async def copy_asset(

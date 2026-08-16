@@ -56,8 +56,8 @@ function Shell({ children, wide }: { children: ReactNode; wide?: boolean }) {
   return (
     <div className="app">
       <aside className="rail">
-        <div className="logo" title="SeeMeTVC">
-          ST
+        <div className="logo" title="GlamPilot">
+          GP
         </div>
         <nav>
           {RAIL.map((r) => (
@@ -77,7 +77,7 @@ function Shell({ children, wide }: { children: ReactNode; wide?: boolean }) {
       <div className="shell">
         <header className="topbar">
           <span className="eyebrow" style={{ margin: 0 }}>
-            SeeMe<span>TVC</span>
+            GlamPilot
           </span>
           <div className="top-actions">
             {me && (

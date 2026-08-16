@@ -51,7 +51,9 @@ export default function StudioPage() {
       api<ParallelQuota>("/api/videos/parallel-quota"),
     ]).then(([list, recent, q]) => {
       setModels(list);
-      if (list[0]) setModelId(list[0].model_id);
+      if (list[0]) {
+        setModelId(list.find((m) => m.model_id === "seedance-2.5")?.model_id || list[0].model_id);
+      }
       setJobs(recent);
       setQuota(q);
       // Only auto-open in-progress jobs; finished clips stay in the queue so the gallery stays visible.

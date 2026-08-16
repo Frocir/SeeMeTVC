@@ -141,6 +141,7 @@ def expand_scenes_to_nodes(
                 "prompt": prompt,
                 "text": prompt,
                 "duration_seconds": 5,
+                "model_id": "seedance-2.5",
                 "source_reverse_node_id": source_node_id,
                 "source_scene_id": scene.get("id") or f"scene_{idx:03d}",
             },

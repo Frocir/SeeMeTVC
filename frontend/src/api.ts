@@ -550,7 +550,14 @@ export async function uploadImage(file: File): Promise<UploadImageResult> {
 }
 
 export type AgentSkill = { id: string; name: string; description: string };
-export type AgentUiMsg = { id: number; role: "user" | "assistant"; content: string };
+export type AgentPlanStage = { id: string; title: string; points: string[] };
+export type AgentPlan = { title: string; rebuild?: boolean; stages: AgentPlanStage[] };
+export type AgentUiMsg = {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  meta?: { kind?: string; plan?: AgentPlan; approved?: boolean } | null;
+};
 export type AgentConfirm = {
   node_id: string;
   node_type: string;
@@ -560,8 +567,6 @@ export type AgentConfirm = {
   unit?: string;
   message?: string;
 };
-export type AgentPlanStage = { id: string; title: string; points: string[] };
-export type AgentPlan = { title: string; rebuild?: boolean; stages: AgentPlanStage[] };
 export type AgentStageCard = {
   stage: string;
   title: string;

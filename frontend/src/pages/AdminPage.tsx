@@ -809,7 +809,7 @@ export default function AdminPage() {
             </label>
             <p className="muted" style={{ marginTop: "-0.35rem" }}>
               {form.kind === "image"
-                ? "image 渠道按单张图片扣费；TextToImage 生成前会进入确认卡。"
+                ? "image 渠道按单张图片扣费；TextToImage 生成时直接扣。"
                 : form.kind === "asr"
                   ? "asr 渠道本轮默认不扣费。填写真实 Key 后启用即可转写。"
                   : "用户侧按「秒 × 此单价」扣费；请与上游真实成本大致对齐。"}
@@ -823,7 +823,7 @@ export default function AdminPage() {
               />
             </label>
             <p className="muted" style={{ marginTop: "-0.35rem" }}>
-              数字越大越优先出现在模型列表。建议：方舟 Lite 80、2.5 70、Pavo 10。
+              数字越大越优先出现在模型列表。建议：方舟 2.5 90、Lite 80、Pavo 10。
             </p>
             <label className="checkbox">
               <input

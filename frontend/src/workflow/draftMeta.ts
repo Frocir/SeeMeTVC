@@ -9,7 +9,7 @@ export function graphBrand(graph?: WorkflowGraph | null): string {
       return data.brand.trim();
     }
   }
-  return "SeeMe";
+  return "GlamPilot";
 }
 
 export function graphAspect(graph?: WorkflowGraph | null): string {

@@ -32,7 +32,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="SeeMeTVC", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="GlamPilot", version="0.1.0", lifespan=lifespan)
 settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
@@ -67,4 +67,4 @@ async def health() -> dict:
         ffmpeg_ok = True
     except Exception as exc:  # noqa: BLE001
         ffmpeg_hint = str(exc)[:200]
-    return {"ok": True, "service": "SeeMeTVC", "ffmpeg_ok": ffmpeg_ok, "ffmpeg": ffmpeg_hint}
+    return {"ok": True, "service": "GlamPilot", "ffmpeg_ok": ffmpeg_ok, "ffmpeg": ffmpeg_hint}

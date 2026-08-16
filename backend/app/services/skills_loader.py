@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
+DEFAULT_SKILL_ID = "seedance-tvc"
 
 _FRONT = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 
@@ -60,8 +61,9 @@ def load_skills() -> dict[str, Skill]:
         raw = path.read_text(encoding="utf-8")
         meta, body = _parse_frontmatter(raw)
         sid = (meta.get("name") or d.name).strip()
+        display = (meta.get("title") or meta.get("display_name") or sid).strip()
         desc = (meta.get("description") or "").strip()
-        out[sid] = Skill(id=sid, name=sid, description=desc, body=body, full=raw)
+        out[sid] = Skill(id=sid, name=display, description=desc, body=body, full=raw)
     return out
 
 

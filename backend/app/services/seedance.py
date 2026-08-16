@@ -34,6 +34,7 @@ ARK_PROVIDERS = {"ark", "volc", "volcengine", "doubao"}
 LEGACY_FAL_PROVIDERS = {"fal"}
 
 DEFAULT_ARK_BASE = "https://ark.cn-beijing.volces.com"
+DEFAULT_VIDEO_MODEL_ID = "seedance-2.5"
 ARK_HTTP_TIMEOUT = httpx.Timeout(120.0, connect=12.0, write=120.0, read=90.0)
 ARK_NET_RETRIES = 3
 

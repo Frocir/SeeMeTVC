@@ -16,7 +16,7 @@ from pydantic import BaseModel
 API_KEY = (os.environ.get("API_KEY") or os.environ.get("AISRV_API_KEY") or "").strip()
 DEFAULT_VOICE = os.environ.get("DEFAULT_VOICE") or "zh-CN-XiaoxiaoNeural"
 
-app = FastAPI(title="SeeMeTVC aisrv", version="0.1.0")
+app = FastAPI(title="GlamPilot aisrv", version="0.1.0")
 
 
 class SpeechIn(BaseModel):

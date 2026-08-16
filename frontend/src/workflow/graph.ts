@@ -25,6 +25,12 @@ export function toApiGraph(nodes: Node<WfData>[], edges: Edge[]) {
   };
 }
 
+function resolveVideoModelId(raw: unknown, preferred: string): string {
+  const mid = String(raw || "").trim();
+  if (!mid || mid === "seedance") return preferred || "seedance-2.5";
+  return mid;
+}
+
 export function fromApiGraph(
   graph: { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> },
   modelId: string,
@@ -55,6 +61,10 @@ export function fromApiGraph(
         textRole: textRole || base.textRole,
         llmRole,
         label: dataRaw.label || base.label,
+        model_id:
+          nodeType === "ImageToVideo" || nodeType === "ShotGenerate"
+            ? resolveVideoModelId(dataRaw.model_id, modelId)
+            : dataRaw.model_id || base.model_id,
       },
     };
   });

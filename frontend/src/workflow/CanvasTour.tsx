@@ -16,13 +16,13 @@ export const GUIDE_STEPS: GuideStep[] = [
   {
     id: "welcome",
     title: "先认三个区域",
-    body: "左：TVC Agent（默认 Plan，先方案再动手）。中：无限画布，节点是真工作流。右：检查器，改提示词和参考图。会扣费的步骤会在对话里先问你。",
+    body: "左：TVC Agent（默认 Auto，齐了就干）。中：无限画布，节点是真工作流。右：检查器，改提示词和参考图。切到 Plan 才有方案卡和环节卡。",
     place: "center",
   },
   {
     id: "agent",
     title: "左边这位是片子主理人",
-    body: "Skill 默认 seedance-tvc。先出方案卡（Brief → 分镜 → 搭图），你点「开始」再搭画布。文生图 / 图生视频会弹出确认提问，确认前不生成、不扣费。",
+    body: "Skill 默认 seedance-tvc。先出方案卡（Brief → 分镜 → 搭图），你点「开始」再搭画布。出片也是点「开始出片」后直接跑，不再单独确认扣费。",
     target: "agent-tab",
     place: "right",
   },
@@ -50,7 +50,7 @@ export const GUIDE_STEPS: GuideStep[] = [
   {
     id: "run",
     title: "整条片子怎么跑",
-    body: "跟 Agent 说话让它 run_*，或点顶栏「开始生成」按连线从头跑到尾。要扣费时仍会先问你。",
+    body: "跟 Agent 说话让它 run_*，或点顶栏「开始生成」按连线从头跑到尾。积分按实际生成扣，不再单独弹确认卡。",
     target: "run",
     place: "bottom",
   },

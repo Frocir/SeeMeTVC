@@ -5,15 +5,18 @@ import { WF_TEMPLATES, type WfTemplateId } from "../workflow/templates";
 
 export async function createDraft(opts: {
   name: string;
-  template: WfTemplateId;
+  template: WfTemplateId | "blank";
   modelId?: string;
   brand?: string;
   prompt?: string;
 }): Promise<Workflow> {
-  const graph = buildTemplateGraph(opts.template, opts.modelId || "", {
-    brand: opts.brand,
-    prompt: opts.prompt,
-  });
+  const graph =
+    opts.template === "blank"
+      ? { nodes: [], edges: [] }
+      : buildTemplateGraph(opts.template, opts.modelId || "seedance-2.5", {
+          brand: opts.brand,
+          prompt: opts.prompt,
+        });
   return api<Workflow>("/api/workflows", {
     method: "POST",
     body: JSON.stringify({ name: opts.name, brand: opts.brand, graph }),

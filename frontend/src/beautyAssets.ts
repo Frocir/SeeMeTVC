@@ -180,9 +180,45 @@ export const HARDWARE_PROMOS: BeautyPromo[] = [
       "Rapid prototype still, white SLA printed enclosure beside a CNC metal insert, calipers on a maker-lab table, soft overhead light, hardware academy commercial",
     duration: 6,
   },
+  {
+    id: "hw-ai-glasses",
+    title: "AI 眼镜",
+    tag: "AI 硬件",
+    brand: "LENS PILOT",
+    kind: "hardware",
+    description: "镜腿传感器与鼻托微距，适合 AI 眼镜、AR 模组开场英雄镜。",
+    image: "/hardware/wearable.jpg",
+    prompt:
+      "Premium AI smart glasses product hero, matte titanium temples, micro sensors at the hinge, cool daylight, clean electronics commercial, 16:9, no text",
+    duration: 5,
+  },
+  {
+    id: "hw-edge-box",
+    title: "边缘推理盒",
+    tag: "AI 硬件",
+    brand: "EDGE FORGE",
+    kind: "hardware",
+    description: "铝合金散热壳体与接口特写，适合端侧推理盒、工控 AI 主机。",
+    image: "/hardware/cnc-body.jpg",
+    prompt:
+      "Edge AI inference box, CNC aluminum chassis with heat vents and I/O ports, dark bench, cool workshop light, industrial electronics TVC, 16:9",
+    duration: 5,
+  },
+  {
+    id: "hw-robot-arm",
+    title: "具身机器人工位",
+    tag: "AI 硬件",
+    brand: "SOMA LAB",
+    kind: "hardware",
+    description: "装配台与关节样机，适合具身机器人、协作臂科创片。",
+    image: "/hardware/workshop.jpg",
+    prompt:
+      "Embodied robot workstation in a hardware academy, joint prototype and PCB on a clean bench, documentary-commercial lighting, 16:9, no text",
+    duration: 8,
+  },
 ];
 
-export const HARDWARE_TAGS = ["结构件", "工坊", "板卡", "无人机", "可穿戴", "样机"] as const;
+export const HARDWARE_TAGS = ["结构件", "工坊", "板卡", "无人机", "可穿戴", "样机", "AI 硬件"] as const;
 
 export const LOOKBOOK_PROMOS: BeautyPromo[] = [
   ...BEAUTY_PROMOS.map((p) => ({ ...p, kind: "beauty" as const })),

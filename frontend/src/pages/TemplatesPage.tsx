@@ -14,7 +14,9 @@ export default function TemplatesPage() {
 
   useEffect(() => {
     void api<ModelOption[]>("/api/models")
-      .then((ms) => setModelId(ms[0]?.model_id || ""))
+      .then((ms) =>
+        setModelId(ms.find((m) => m.model_id === "seedance-2.5")?.model_id || ms[0]?.model_id || ""),
+      )
       .catch((e) => setError(e instanceof Error ? e.message : "加载失败"));
   }, []);
 

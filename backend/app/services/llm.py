@@ -14,7 +14,10 @@ from app.llm_ids import is_official_deepseek_url
 from app.models import Channel
 from app.services.net import describe_upstream_disconnect, is_transient_httpx, make_async_client
 
-LLM_HTTP_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+# 画布写镜头 / Brief 等非流式调用。思考模型或网关偶发会超过 20s，过短会误杀。
+LLM_HTTP_TIMEOUT = httpx.Timeout(60.0, connect=8.0)
+LLM_SHOT_MAX_TOKENS = 768
+LLM_DEFAULT_MAX_TOKENS = 2048
 
 SYSTEM_BRIEF = (
     "你是美妆 TVC 文案。根据用户给出的品牌、卖点、口号，写一段可直接给下游使用的 Brief。"
@@ -91,14 +94,18 @@ async def chat_complete(
     user: str,
     role: str = "chat",
     want_narration: bool = True,
+    max_tokens: int | None = None,
 ) -> str:
     user = (user or "").strip()
     if not user:
         raise LlmError("LLM 缺少输入文本")
+    if max_tokens is None and role == "shot":
+        max_tokens = LLM_SHOT_MAX_TOKENS
     return await chat_messages(
         channel,
         messages=[{"role": "user", "content": user}],
         system=system,
+        max_tokens=max_tokens,
     )
 
 
@@ -125,6 +132,7 @@ async def chat_messages(
     *,
     messages: list[dict[str, str]],
     system: str = "",
+    max_tokens: int | None = None,
 ) -> str:
     cleaned = _normalize_chat_messages(messages)
     if not cleaned:
@@ -137,8 +145,12 @@ async def chat_messages(
         raise LlmError("LLM 渠道未填写 upstream_model")
     provider = (channel.provider or "openai").lower()
     if provider == "anthropic":
-        return await _anthropic(channel, key=key, model=model, system=system, messages=cleaned)
-    return await _openai(channel, key=key, model=model, system=system, messages=cleaned)
+        return await _anthropic(
+            channel, key=key, model=model, system=system, messages=cleaned, max_tokens=max_tokens
+        )
+    return await _openai(
+        channel, key=key, model=model, system=system, messages=cleaned, max_tokens=max_tokens
+    )
 
 
 async def _openai(
@@ -149,6 +161,7 @@ async def _openai(
     system: str,
     user: str = "",
     messages: list[dict[str, str]] | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     url = f"{_openai_root(channel.base_url)}/chat/completions"
     payload_messages: list[dict[str, str]] = []
@@ -158,13 +171,21 @@ async def _openai(
         payload_messages.extend(messages)
     else:
         payload_messages.append({"role": "user", "content": user})
-    payload = {"model": model, "messages": payload_messages, "temperature": 0.7}
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": payload_messages,
+        "temperature": 0.7,
+        "max_tokens": int(max_tokens or LLM_DEFAULT_MAX_TOKENS),
+    }
+    if is_official_deepseek_url(channel.base_url):
+        # V4 Pro 默认 thinking，写单镜只需要短 JSON，开思考会慢一个数量级。
+        payload["thinking"] = {"type": "disabled"}
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     try:
         async with make_async_client(timeout=LLM_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload)
     except Exception as exc:  # noqa: BLE001
-        raise LlmError(f"LLM 请求失败（约 20 秒未响应即超时）：{exc}") from exc
+        raise LlmError(f"LLM 请求失败：{exc}") from exc
     if resp.status_code >= 400:
         raise LlmError(f"LLM 上游 HTTP {resp.status_code}：{(resp.text or '')[:300]}")
     data = resp.json()
@@ -185,11 +206,12 @@ async def _anthropic(
     system: str,
     user: str = "",
     messages: list[dict[str, str]] | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     url = f"{_anthropic_root(channel.base_url)}/v1/messages"
     payload: dict[str, Any] = {
         "model": model,
-        "max_tokens": 2048,
+        "max_tokens": int(max_tokens or LLM_DEFAULT_MAX_TOKENS),
         "messages": messages or [{"role": "user", "content": user}],
     }
     if system.strip():
@@ -199,7 +221,7 @@ async def _anthropic(
         async with make_async_client(timeout=LLM_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload)
     except Exception as exc:  # noqa: BLE001
-        raise LlmError(f"LLM 请求失败（约 20 秒未响应即超时）：{exc}") from exc
+        raise LlmError(f"LLM 请求失败：{exc}") from exc
     if resp.status_code >= 400:
         raise LlmError(f"LLM 上游 HTTP {resp.status_code}：{(resp.text or '')[:300]}")
     data = resp.json()

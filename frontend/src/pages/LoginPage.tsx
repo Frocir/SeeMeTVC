@@ -1,9 +1,20 @@
 import { useState, type FormEvent } from "react";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "../auth";
-import { BEAUTY_PROMOS } from "../beautyAssets";
+import { BEAUTY_PROMOS, HARDWARE_PROMOS } from "../beautyAssets";
 
-const heroTiles = BEAUTY_PROMOS.slice(0, 3);
+const heroTiles = [
+  { ...BEAUTY_PROMOS[2], kindLabel: "香氛" },
+  { ...BEAUTY_PROMOS[0], kindLabel: "唇妆" },
+  { ...HARDWARE_PROMOS.find((p) => p.id === "hw-ai-glasses")!, kindLabel: "AI 眼镜" },
+  { ...BEAUTY_PROMOS[1], kindLabel: "护肤" },
+];
+
+const ADVANTAGES = [
+  { n: "01", t: "Lookbook 即开工", d: "美妆与 AI 硬件模板" },
+  { n: "02", t: "节点可改可重跑", d: "Auto 直出，或 Plan 分环" },
+  { n: "03", t: "按生成扣积分", d: "同一画布出片，账目清楚" },
+];
 
 export default function LoginPage() {
   const { me, login, register } = useAuth();
@@ -35,25 +46,46 @@ export default function LoginPage() {
     <div className="auth-page">
       <div className="auth-shell">
         <div className="auth-hero">
-          <div className="auth-hero-mosaic">
+          <div className="auth-hero-top">
+            <span className="auth-seal" aria-hidden>
+              GP
+            </span>
+            <span className="auth-hero-kicker">Beauty · Hardware · Film</span>
+          </div>
+          <div className="auth-hero-name">
+            <h1 className="auth-wordmark">
+              <em>Glam</em>Pilot
+            </h1>
+            <p className="auth-tagline">把 brief 变成能改、能再跑的成片工作流</p>
+          </div>
+          <div className="auth-hero-mosaic" aria-hidden>
             {heroTiles.map((tile) => (
-              <div key={tile.id} className="auth-tile" data-label={tile.tag}>
-                <img src={tile.image} alt={tile.title} />
+              <div
+                key={tile.id}
+                className={`auth-tile is-${tile.kind === "hardware" ? "hardware" : "beauty"}`}
+                data-label={tile.kindLabel}
+              >
+                <img src={tile.image} alt="" />
               </div>
             ))}
           </div>
-          <div className="auth-hero-copy">
-            <p className="eyebrow">面部美妆 · TVC 成片</p>
-            <h1 className="brand-mark">为美妆品牌拍出能上线的广告片</h1>
-            <p className="lead">
-              唇釉微距、底妆贴合、精华光感——面向面部美妆垂类。项目里编排成片，余额清晰。
-            </p>
-          </div>
+          <ol className="auth-feats">
+            {ADVANTAGES.map((item) => (
+              <li key={item.n}>
+                <span>{item.n}</span>
+                <strong>{item.t}</strong>
+                <em>{item.d}</em>
+              </li>
+            ))}
+          </ol>
         </div>
 
         <div className="auth-panel">
+          <span className="auth-panel-seal" aria-hidden>
+            GP
+          </span>
           <h1>{mode === "login" ? "进入工作区" : "创建品牌账号"}</h1>
-          <p className="muted">项目编排 · 成片回看 · 余额清晰</p>
+          <p className="muted">用账号打开你的 GlamPilot 画布</p>
           <form onSubmit={onSubmit}>
             {mode === "register" && (
               <label>

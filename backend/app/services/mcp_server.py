@@ -11,13 +11,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AssetVersion, Channel, User, Workflow, WorkflowRun, WorkflowRunStatus
-from app.services import asset_versions, graph_ops, scene_expand
+from app.services import asset_versions, graph_ops, scene_expand, seedance
 from app.services.graph_revisions import persist_graph
 from app.services.project_assets import delete_ephemeral_run, refresh_cover, sync_from_graph
 from app.services.run_preflight import cannot_run_reason
 from app.services.workflow_exec import execute_run
 
 Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+MAX_GRAPH_NODES = 24
+MAX_ADD_PER_RUN = 12
+
+
+def _node_count(graph: dict) -> int:
+    return len([n for n in (graph.get("nodes") or []) if isinstance(n, dict)])
 
 RUN_TOOLS: dict[str, str] = {
     "run_llm_text": "LlmText",
@@ -237,7 +244,7 @@ for _tool, _nt in RUN_TOOLS.items():
     TOOL_SPECS.append(
         ToolSpec(
             _tool,
-            f"运行画布上已有的 {_nt} 节点（id=node_id）。会扣费的生成需等用户确认卡。",
+            f"运行画布上已有的 {_nt} 节点（id=node_id）。出片环直接跑，不要再等扣费确认。",
             {
                 "type": "object",
                 "properties": {"node_id": {"type": "string"}},
@@ -439,10 +446,20 @@ async def call_tool(ctx: McpContext, name: str, arguments: dict[str, Any]) -> st
     if name == "complete_stage":
         return dumps({"ok": True, "note": str(args.get("note") or "")})
     if name == "add_node":
+        existing = _node_count(graph)
+        if existing >= MAX_GRAPH_NODES:
+            raise ValueError(
+                f"画布已有 {existing} 个节点，不能再加。用 patch_node / connect / layout_graph 整理现有链，"
+                "用户说重做再 delete_node。"
+            )
+        if ctx.add_count >= MAX_ADD_PER_RUN:
+            raise ValueError(
+                f"这一轮已经加了 {ctx.add_count} 个节点。先 connect 和 layout_graph，缺什么再补。"
+            )
         ctx.add_count += 1
         nid = graph_ops.add_node(
             graph,
-            node_type=str(args.get("node_type") or ""),
+            node_type=str(args.get("node_type") or args.get("type") or ""),
             label=str(args.get("label") or ""),
             data=args.get("data") if isinstance(args.get("data"), dict) else None,
             x=args.get("x"),
@@ -452,6 +469,7 @@ async def call_tool(ctx: McpContext, name: str, arguments: dict[str, Any]) -> st
                 ctx.viewport[1] + 36 * (ctx.add_count % 6),
             ),
         )
+        await _fill_default_model_ids(ctx.db, graph)
         await _save(ctx, graph)
         ctx.structure_changed = True
         return dumps({"node_id": nid, "node_type": str(args.get("node_type") or "")})
@@ -501,6 +519,10 @@ async def call_tool(ctx: McpContext, name: str, arguments: dict[str, Any]) -> st
             await ctx.emit("chat_cleared", {"ok": True})
         return dumps({"ok": True, "cleared": n})
     if name == "expand_scenes_to_nodes":
+        if _node_count(graph) >= MAX_GRAPH_NODES:
+            raise ValueError(
+                f"画布已有 {_node_count(graph)} 个节点，不要再展开一套。先整理或删除重复链。"
+            )
         result = scene_expand.expand_scenes_to_nodes(
             graph,
             source_node_id=str(args.get("source_node_id") or ""),
@@ -510,6 +532,7 @@ async def call_tool(ctx: McpContext, name: str, arguments: dict[str, Any]) -> st
             create_subtitles=args.get("create_subtitles") if isinstance(args.get("create_subtitles"), bool) else None,
             layout=str(args.get("layout") or "horizontal"),
         )
+        await _fill_default_model_ids(ctx.db, graph)
         await _save(ctx, graph)
         ctx.structure_changed = True
         return dumps(
@@ -630,7 +653,7 @@ async def estimate_run_cost(db: AsyncSession, graph: dict, node_id: str) -> dict
         "label": label,
         "model_id": model_id,
         "estimated_cost": cost,
-        "needs_confirm": cost > 0,
+        "needs_confirm": False,
     }
 
 
@@ -653,6 +676,8 @@ async def _run_node(ctx: McpContext, graph: dict, tool_name: str, node_id: str) 
     )
     if reason:
         raise ValueError(reason)
+    if await _fill_default_model_ids(ctx.db, graph):
+        await _save(ctx, graph)
     payload = dict(graph)
     payload["__run_opts__"] = {"target_ids": [node_id]}
     run = WorkflowRun(
@@ -667,7 +692,7 @@ async def _run_node(ctx: McpContext, graph: dict, tool_name: str, node_id: str) 
     await ctx.db.refresh(run)
     run_id = run.id
     await execute_run(run_id)
-    await ctx.db.expire(run)
+    ctx.db.expire(run)
     run = await ctx.db.get(WorkflowRun, run_id)
     if run is None:
         return dumps(
@@ -718,6 +743,41 @@ async def _save(ctx: McpContext, graph: dict) -> None:
         await ctx.emit("graph", graph_ops.parse_graph(ctx.workflow.graph_json))
 
 
+_NODE_MODEL_KIND = {
+    "ImageToVideo": "video",
+    "ShotGenerate": "video",
+    "TextToImage": "image",
+    "LlmText": "llm",
+    "LlmChat": "llm",
+    "LlmBrief": "llm",
+    "LlmStoryboard": "llm",
+    "LlmShot": "llm",
+    "TtsSpeak": "tts",
+    "SpeechToText": "asr",
+}
+
+
+async def _fill_default_model_ids(db: AsyncSession, graph: dict) -> bool:
+    changed = False
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        nt = graph_ops.normalize_type(node)
+        kind = _NODE_MODEL_KIND.get(nt)
+        if not kind:
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        if str(data.get("model_id") or "").strip():
+            continue
+        ch = await _channel(db, "", kind=kind)
+        if ch is None:
+            continue
+        data["model_id"] = ch.model_id
+        node["data"] = data
+        changed = True
+    return changed
+
+
 async def _channel(db: AsyncSession, model_id: str, *, kind: str) -> Channel | None:
     if model_id.strip():
         result = await db.execute(
@@ -727,6 +787,19 @@ async def _channel(db: AsyncSession, model_id: str, *, kind: str) -> Channel | N
             .limit(1)
         )
         ch = result.scalar_one_or_none()
+        if ch is not None:
+            return ch
+    if kind == "video":
+        lite = await db.execute(
+            select(Channel)
+            .where(
+                Channel.model_id == seedance.DEFAULT_VIDEO_MODEL_ID,
+                Channel.enabled.is_(True),
+                Channel.kind == "video",
+            )
+            .limit(1)
+        )
+        ch = lite.scalar_one_or_none()
         if ch is not None:
             return ch
     result = await db.execute(

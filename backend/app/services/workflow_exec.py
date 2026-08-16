@@ -174,6 +174,20 @@ def _has_usable_output(ntype: str, data: dict) -> bool:
     return True
 
 
+# 一键整条跑时，这些节点若已有可用结果就复用，避免 Agent 写完镜头再被 LLM 重写一遍。
+_REUSE_ON_FULL_RUN = frozenset({*LLM_TYPES, "VideoReversePrompt"})
+
+
+def _reuse_existing_on_full_run(ntype: str, data: dict, *, targeted: bool) -> bool:
+    if targeted:
+        return False
+    if ntype not in _REUSE_ON_FULL_RUN:
+        return False
+    if data.get("runStatus") == "failed" or data.get("stale"):
+        return False
+    return _has_usable_output(ntype, data)
+
+
 def _ancestor_ids(node_id: str, edges: list[dict], id_set: set[str]) -> list[str]:
     incoming: dict[str, list[str]] = defaultdict(list)
     for e in edges:
@@ -598,6 +612,25 @@ async def _pick_channel(db: AsyncSession, model_id: str) -> Channel | None:
     return result.scalar_one_or_none()
 
 
+async def _pick_kind_channel(db: AsyncSession, model_id: str, kind: str) -> Channel | None:
+    mid = (model_id or "").strip()
+    if mid:
+        ch = await _pick_channel(db, mid)
+        if ch is not None and (ch.kind or "").strip().lower() == kind:
+            return ch
+    if kind == "video":
+        preferred = await _pick_channel(db, seedance.DEFAULT_VIDEO_MODEL_ID)
+        if preferred is not None and (preferred.kind or "").strip().lower() == "video":
+            return preferred
+    result = await db.execute(
+        select(Channel)
+        .where(Channel.enabled.is_(True), Channel.kind == kind)
+        .order_by(Channel.priority.desc(), Channel.id.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 def _brief_from_ctx(ctx: dict[str, Any], data: dict) -> dict[str, Any]:
     return {
         "brand": data.get("brand") or ctx.get("brand") or "",
@@ -635,19 +668,17 @@ async def _run_shot(
     charged: list[float],
     on_hint=None,
 ) -> dict[str, Any]:
-    model_id = data.get("model_id") or ctx.get("model_id")
-    if not model_id:
-        raise WorkflowExecError("图生视频缺少模型（model_id）")
+    # 不要用上游 LLM 的 model_id。Agent 搭的出视频节点常常没填模型。
+    channel = await _pick_kind_channel(db, str(data.get("model_id") or ""), "video")
+    if channel is None:
+        raise WorkflowExecError("没有已启用的视频渠道。请超管填写并启用 Seedance 等模型。")
+    model_id = channel.model_id
 
     image_url = data.get("first_image_url") or data.get("image_url") or ctx.get("image_url")
     last_image_url = data.get("last_image_url") or ctx.get("last_image_url")
     style_image_url = data.get("style_image_url")
     character_image_url = data.get("character_image_url")
     product_image_url = data.get("product_image_url")
-
-    channel = await _pick_channel(db, str(model_id))
-    if channel is None:
-        raise WorkflowExecError(f"模型不可用：{model_id}")
 
     check_data = {
         **data,
@@ -942,7 +973,7 @@ async def _exec_llm(
         ch = result.scalar_one_or_none()
     if ch is None:
         raise WorkflowExecError("没有已启用的 LLM 渠道。请超管填写并启用对话模型。")
-    await on_hint("正在调用 LLM（约 20 秒未响应即失败）…")
+    await on_hint("正在写镜头…" if role == "shot" else "正在调用对话模型…")
     try:
         raw = await llm_svc.chat_complete(
             ch, system=system, user=user, role=role, want_narration=want_narration
@@ -1423,6 +1454,24 @@ async def execute_run(run_id: int) -> None:
                 ntype = _normalize_type(node.get("type"), data)
                 if ntype not in NODE_TYPES and ntype not in LEGACY_TO_FREE.values():
                     raise WorkflowExecError(f"未知节点类型：{ntype or node.get('type')}")
+
+                if _reuse_existing_on_full_run(ntype, data, targeted=target_set is not None):
+                    syn = _tag_ports(str(ntype), _synthetic_output_from_data(data))
+                    outputs[nid] = syn
+                    node_states[nid] = {
+                        "status": "succeeded",
+                        "output": {
+                            k: syn.get(k)
+                            for k in ("prompt", "text", "narration", "scenes", "frames")
+                            if syn.get(k) not in (None, "", [])
+                        },
+                        "error": None,
+                        "cost": 0.0,
+                        "hint": "已有文案，跳过重写",
+                    }
+                    run.node_states_json = json.dumps(node_states, ensure_ascii=False)
+                    await db.commit()
+                    continue
 
                 node_states[nid] = {"status": "running", "output": None, "error": None, "cost": 0.0}
                 run.node_states_json = json.dumps(node_states, ensure_ascii=False)

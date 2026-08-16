@@ -56,6 +56,40 @@ const TOOL_STATUS_ZH: Record<string, string> = {
   waiting: "等待确认",
 };
 
+function PlanCard({
+  plan,
+  approved,
+}: {
+  plan: AgentPlan;
+  approved?: boolean;
+}) {
+  return (
+    <div className={`cv-agent-plan${approved ? " is-approved" : ""}`}>
+      <p>
+        <strong>{plan.title || "片子方案"}</strong>
+        {plan.rebuild ? " · 重搭画布" : ""}
+        {approved ? <span className="cv-agent-plan-ok">已批准</span> : null}
+      </p>
+      {(plan.stages || []).map((s) => (
+        <div key={s.id} className="cv-agent-plan-stage">
+          <em>{s.title}</em>
+          {s.points?.length ? (
+            <ul>
+              {s.points.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          ) : (
+            <span className="cv-agent-confirm-meta">要点待补</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const DEFAULT_SKILL_ID = "seedance-tvc";
+
 type WorkMode = "auto" | "plan";
 type AgentChoice = { id: string; label: string; hint?: string };
 
@@ -65,8 +99,8 @@ const WORK_MODES: { id: WorkMode; label: string; title: string }[] = [
 ];
 
 function normalizeWorkMode(raw?: string): WorkMode {
-  if (raw === "auto" || raw === "goal") return "auto";
-  return "plan";
+  if (raw === "plan" || raw === "click") return "plan";
+  return "auto";
 }
 
 function AgentChoiceCard({
@@ -154,8 +188,8 @@ export default function TvcAgentPanel({
     models.find((m) => m.model_id === DEFAULT_AGENT_MODEL_ID)?.model_id || models[0]?.model_id || "";
   const [modelId, setModelId] = useState(preferred);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
-  const [skillId, setSkillId] = useState("");
-  const [workMode, setWorkMode] = useState<WorkMode>("plan");
+  const [skillId, setSkillId] = useState(DEFAULT_SKILL_ID);
+  const [workMode, setWorkMode] = useState<WorkMode>("auto");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -170,6 +204,7 @@ export default function TvcAgentPanel({
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const clearLock = useRef(false);
+  const resumeLock = useRef(false);
 
   useEffect(() => {
     if (!modelId && preferred) setModelId(preferred);
@@ -182,11 +217,35 @@ export default function TvcAgentPanel({
   }, []);
 
   useEffect(() => {
-    if (!workflowId) return;
+    if (!workflowId) {
+      setMessages([]);
+      setConfirm(null);
+      setPlan(null);
+      setStage(null);
+      setError("");
+      setStreamText("");
+      setTools([]);
+      setSkillId(DEFAULT_SKILL_ID);
+      setAutoSwitchAsk(false);
+      onLocked(false);
+      return;
+    }
+    let cancelled = false;
+    setMessages([]);
+    setConfirm(null);
+    setPlan(null);
+    setStage(null);
+    setError("");
+    setStreamText("");
+    setTools([]);
+    setSkillId(DEFAULT_SKILL_ID);
+    setAutoSwitchAsk(false);
+    onLocked(false);
     void api<AgentSessionOut>(`/api/agent/session?workflow_id=${workflowId}`)
       .then((s) => {
+        if (cancelled || s.workflow_id !== workflowId) return;
         setMessages(s.messages || []);
-        if (s.skill_id) setSkillId(s.skill_id);
+        setSkillId(s.skill_id || "");
         setWorkMode(normalizeWorkMode(s.work_mode));
         setConfirm(s.pending_confirm);
         setPlan(s.pending_plan || null);
@@ -195,6 +254,9 @@ export default function TvcAgentPanel({
         onLocked(s.status === "confirm_pending" || s.status === "running");
       })
       .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [workflowId, onLocked]);
 
   useEffect(() => {
@@ -373,15 +435,28 @@ export default function TvcAgentPanel({
   }
 
   async function resumeAction(action: string, accept = true, label = "") {
-    if (!workflowId || busy) return;
+    if (!workflowId || busy || resumeLock.current) return;
     if (action === "revise") {
       focusDraft();
       return;
     }
+    resumeLock.current = true;
     if (label) echoChoice(label);
+    if (action === "approve" && plan) {
+      const snapshot = plan;
+      setMessages((ms) => [
+        ...ms,
+        {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: "",
+          meta: { kind: "plan", approved: true, plan: snapshot },
+        },
+      ]);
+    }
     setBusy(true);
     onLocked(action === "approve" || action === "confirm" || action === "skip_to_auto");
-    if (action === "cancel" || action === "approve" || action === "skip_to_auto") {
+    if (action === "cancel" || action === "approve" || action === "skip_to_auto" || action === "back") {
       setPlan(null);
       setStage(null);
       setAutoSwitchAsk(false);
@@ -404,6 +479,8 @@ export default function TvcAgentPanel({
       setError(e instanceof Error ? e.message : "操作失败");
       setBusy(false);
       onLocked(false);
+    } finally {
+      resumeLock.current = false;
     }
   }
 
@@ -489,7 +566,7 @@ export default function TvcAgentPanel({
         </div>
         <button
           type="button"
-          className="cv-agent-iconbtn"
+          className="cv-agent-iconbtn cv-agent-clearbtn"
           title="清空对话，画布不动"
           aria-label="清空对话"
           onPointerDown={(e) => {
@@ -502,7 +579,7 @@ export default function TvcAgentPanel({
             void clearThread();
           }}
         >
-          ×
+          清空
         </button>
       </div>
       <div className="cv-agent-thread" ref={threadRef}>
@@ -512,11 +589,15 @@ export default function TvcAgentPanel({
             <p>先告诉我品牌和你想要的感觉，方案想清楚了我再去画布上搭。</p>
           </div>
         )}
-        {messages.map((m, i) => (
-          <div key={`${m.role}-${m.id}-${i}`} className={`cv-agent-msg ${m.role}`}>
-            <p>{m.content}</p>
-          </div>
-        ))}
+        {messages.map((m, i) =>
+          m.meta?.kind === "plan" && m.meta.plan ? (
+            <PlanCard key={`${m.role}-${m.id}-${i}`} plan={m.meta.plan} approved={!!m.meta.approved} />
+          ) : (
+            <div key={`${m.role}-${m.id}-${i}`} className={`cv-agent-msg ${m.role}`}>
+              <p>{m.content}</p>
+            </div>
+          ),
+        )}
         {tools.map((t, i) => (
           <div key={`tool-${i}`} className={`cv-agent-tool ${t.status}`}>
             {formatToolLine(t)}
@@ -528,26 +609,7 @@ export default function TvcAgentPanel({
           </div>
         )}
         {plan && !confirm && (
-          <div className="cv-agent-plan">
-            <p>
-              <strong>{plan.title || "片子方案"}</strong>
-              {plan.rebuild ? " · 重搭画布" : ""}
-            </p>
-            {(plan.stages || []).map((s) => (
-              <div key={s.id} className="cv-agent-plan-stage">
-                <em>{s.title}</em>
-                {s.points?.length ? (
-                  <ul>
-                    {s.points.map((p) => (
-                      <li key={p}>{p}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  <span className="cv-agent-confirm-meta">要点待补</span>
-                )}
-              </div>
-            ))}
-          </div>
+          <PlanCard plan={plan} />
         )}
         {stage && !confirm && !plan && (
           <div className="cv-agent-plan">
@@ -561,7 +623,11 @@ export default function TvcAgentPanel({
                 ))}
               </ul>
             ) : (
-              <p className="cv-agent-confirm-meta">点开始我就做这一环，出片还要再问你。</p>
+              <p className="cv-agent-confirm-meta">
+                {stage.stage === "shoot"
+                  ? "画布不对直接跟我说，不必再点开始搭图。出片仍会再问你。"
+                  : "点开始我就做这一环，出片还要再问你。"}
+              </p>
             )}
           </div>
         )}
@@ -574,7 +640,7 @@ export default function TvcAgentPanel({
               {
                 id: "skip_auto",
                 label: "切到 Auto，立刻续跑",
-                hint: "跳过剩余创作闸门，扣费生成仍会再问你",
+                hint: "跳过剩余创作闸门，立刻续跑",
               },
               { id: "stay", label: "留在 Plan", hint: "模式不变，计划还在" },
             ]}
@@ -612,19 +678,41 @@ export default function TvcAgentPanel({
                 label: stage.start_label || "开始",
                 hint: "只做这一环，出片还要再问你",
               },
+              ...(stage.stage !== "brief"
+                ? [
+                    {
+                      id: "back",
+                      label:
+                        stage.stage === "shoot"
+                          ? "返回搭图"
+                          : stage.stage === "graph"
+                            ? "返回分镜"
+                            : "返回 Brief",
+                      hint: "上一环继续改，不会开始出片",
+                    },
+                  ]
+                : []),
               { id: "revise", label: "先改", hint: "在下面说要改什么" },
               { id: "cancel", label: "取消计划" },
             ]}
-            onSubmit={(id) =>
+            onSubmit={(id) => {
+              const backLabel =
+                stage.stage === "shoot"
+                  ? "返回搭图"
+                  : stage.stage === "graph"
+                    ? "返回分镜"
+                    : "返回 Brief";
               pickChoice(
                 id,
                 id === "approve"
                   ? stage.start_label || "开始"
-                  : id === "cancel"
-                    ? "取消计划"
-                    : "先改",
-              )
-            }
+                  : id === "back"
+                    ? backLabel
+                    : id === "cancel"
+                      ? "取消计划"
+                      : "先改",
+              );
+            }}
           />
         )}
         {confirm && (

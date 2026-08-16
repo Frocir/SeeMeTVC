@@ -709,7 +709,7 @@ export default function WfInspector({
               <p className="wf-field-hint">灰色项是当前模型做不到的，不会提交。</p>
             )}
             <p className="wf-field-hint">
-              图像渠道按「每张图片」扣费，Agent 触发生成时会先弹确认卡。
+              图像渠道按「每张图片」扣费，点开始出片或「生成这一步」后直接跑。
             </p>
                 </>
               );
@@ -1012,7 +1012,7 @@ export default function WfInspector({
               />
             </label>
             <p className="wf-field-hint">
-              会调用已启用的对话模型；大约 20 秒没响应就算失败。
+              会调用已启用的对话模型。
               {(d.llmRole || "shot") === "shot"
                 ? d.wantNarration === false
                   ? " 这一镜只写画面，不写口播。"
