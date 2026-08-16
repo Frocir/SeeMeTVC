@@ -1,5 +1,5 @@
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { useState, type ReactNode } from "react";
+import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { useRef, useState, type ReactNode } from "react";
 import { api, type BalanceEntry } from "./api";
 import { useAuth } from "./auth";
 import LedgerModal from "./components/LedgerModal";
@@ -10,6 +10,7 @@ import StudioPage from "./pages/StudioPage";
 import TemplatesPage from "./pages/TemplatesPage";
 import WorkflowCanvasPage from "./pages/WorkflowCanvasPage";
 import WorkspacePage from "./pages/WorkspacePage";
+import { useShowAdmin, setShowAdmin } from "./flags";
 
 const RAIL = [
   { to: "/", icon: "▦", label: "工作区", end: true },
@@ -19,9 +20,12 @@ const RAIL = [
 
 function Shell({ children, wide }: { children: ReactNode; wide?: boolean }) {
   const { me, logout } = useAuth();
+  const navigate = useNavigate();
+  const showAdmin = useShowAdmin();
   const [ledgerOpen, setLedgerOpen] = useState(false);
   const [ledger, setLedger] = useState<BalanceEntry[] | null>(null);
   const [ledgerError, setLedgerError] = useState("");
+  const avatarClicks = useRef({ n: 0, t: 0 });
 
   async function openLedger() {
     setLedgerOpen(true);
@@ -36,6 +40,19 @@ function Shell({ children, wide }: { children: ReactNode; wide?: boolean }) {
 
   const initial = (me?.display_name || me?.email || "?").slice(0, 1);
 
+  function onAvatarClick() {
+    if (me?.role !== "super_admin") return;
+    const now = Date.now();
+    if (now - avatarClicks.current.t > 2000) avatarClicks.current.n = 0;
+    avatarClicks.current.t = now;
+    avatarClicks.current.n += 1;
+    if (avatarClicks.current.n < 5) return;
+    avatarClicks.current.n = 0;
+    const next = !showAdmin;
+    setShowAdmin(next);
+    navigate(next ? "/admin" : "/");
+  }
+
   return (
     <div className="app">
       <aside className="rail">
@@ -49,7 +66,7 @@ function Shell({ children, wide }: { children: ReactNode; wide?: boolean }) {
               <span>{r.label}</span>
             </NavLink>
           ))}
-          {me?.role === "super_admin" && (
+          {showAdmin && me?.role === "super_admin" && (
             <NavLink to="/admin" title="超管">
               <span className="ico">⌘</span>
               <span>超管</span>
@@ -69,7 +86,9 @@ function Shell({ children, wide }: { children: ReactNode; wide?: boolean }) {
               </button>
             )}
             <span className="account">
-              <span className="avatar">{initial}</span>
+              <span className="avatar" onClick={onAvatarClick}>
+                {initial}
+              </span>
               <span>{me?.display_name || me?.email}</span>
             </span>
             <button type="button" className="admin-btn" onClick={logout}>
@@ -106,6 +125,7 @@ function Private({
 }
 
 export default function App() {
+  const showAdmin = useShowAdmin();
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
@@ -158,9 +178,13 @@ export default function App() {
       <Route
         path="/admin"
         element={
-          <Private>
-            <AdminPage />
-          </Private>
+          showAdmin ? (
+            <Private>
+              <AdminPage />
+            </Private>
+          ) : (
+            <Navigate to="/" replace />
+          )
         }
       />
     </Routes>

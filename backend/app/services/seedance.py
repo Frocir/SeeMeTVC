@@ -20,7 +20,13 @@ import httpx
 from app.api.uploads import async_resolve_image_for_upstream, uploads_root
 from app.config import get_settings
 from app.models import Channel
-from app.services.net import agnes_should_force_direct, make_async_client, resolve_agnes_base_url
+from app.services.net import (
+    agnes_should_force_direct,
+    describe_upstream_disconnect,
+    is_transient_httpx,
+    make_async_client,
+    resolve_agnes_base_url,
+)
 
 AGNES_PROVIDERS = {"agnes", "pavo", "agnes-pavo"}
 ARK_PROVIDERS = {"ark", "volc", "volcengine", "doubao"}
@@ -28,6 +34,8 @@ ARK_PROVIDERS = {"ark", "volc", "volcengine", "doubao"}
 LEGACY_FAL_PROVIDERS = {"fal"}
 
 DEFAULT_ARK_BASE = "https://ark.cn-beijing.volces.com"
+ARK_HTTP_TIMEOUT = httpx.Timeout(120.0, connect=12.0, write=120.0, read=90.0)
+ARK_NET_RETRIES = 3
 
 # Process-wide throttle: Agnes free tier rate-limits status queries hard.
 _agnes_gate = asyncio.Lock()
@@ -68,7 +76,7 @@ async def _agnes_backoff_429() -> None:
         _agnes_last_call_at = time.monotonic()
 
 
-def _client(timeout: float = 60.0, *, force_direct: bool = False) -> httpx.AsyncClient:
+def _client(timeout: float | httpx.Timeout = 60.0, *, force_direct: bool = False) -> httpx.AsyncClient:
     return make_async_client(timeout=timeout, force_direct=force_direct)
 
 
@@ -151,6 +159,34 @@ def _ark_model(channel: Channel) -> str:
             return "doubao-seedance-2-0-260128"
         return "doubao-seedance-1-0-lite-t2v-250428"
     return m
+
+
+async def _ark_http(channel: Channel, method: str, url: str, **kwargs) -> httpx.Response:
+    base = _ark_base(channel)
+    last: Exception | None = None
+    for attempt in range(1, ARK_NET_RETRIES + 1):
+        try:
+            async with _client(
+                timeout=ARK_HTTP_TIMEOUT, force_direct=ark_should_force_direct(base)
+            ) as client:
+                if method == "POST":
+                    return await client.post(url, **kwargs)
+                return await client.get(url, **kwargs)
+        except SeedanceError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if not is_transient_httpx(exc) or attempt >= ARK_NET_RETRIES:
+                raise SeedanceError(
+                    describe_upstream_disconnect(exc, who="火山方舟视频（生视频渠道，不是对话 Key）")
+                ) from exc
+            await asyncio.sleep(1.2 * attempt)
+    raise SeedanceError(
+        describe_upstream_disconnect(
+            last or RuntimeError("unknown"),
+            who="火山方舟视频（生视频渠道，不是对话 Key）",
+        )
+    )
 
 
 async def submit_generation(
@@ -326,26 +362,25 @@ async def _submit_ark(
         "Content-Type": "application/json",
     }
 
-    async with _client(timeout=90.0, force_direct=ark_should_force_direct(base)) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        if resp.status_code == 401:
-            raise SeedanceError(
-                "火山方舟认证失败（401）：API Key 无效。"
-                "请在方舟控制台复制 ARK_API_KEY，超管「改 Key」后重试。"
-                f" model={payload.get('model')}"
-            )
-        if resp.status_code == 403:
-            raise SeedanceError(
-                "火山方舟拒绝访问（403）：可能未开通该模型/接入点或余额不足。"
-                f" model={payload.get('model')} 详情：{resp.text[:240]}"
-            )
-        if resp.status_code >= 400:
-            raise SeedanceError(f"方舟提交失败: {resp.status_code} {resp.text[:400]}")
-        data = resp.json()
-        task_id = data.get("id") or data.get("task_id")
-        if not task_id:
-            raise SeedanceError(f"方舟未返回任务 ID: {data}")
-        return f"ark:{task_id}"
+    resp = await _ark_http(channel, "POST", url, json=payload, headers=headers)
+    if resp.status_code == 401:
+        raise SeedanceError(
+            "火山方舟认证失败（401）：API Key 无效。"
+            "请在方舟控制台复制 ARK_API_KEY，超管「改 Key」后重试。"
+            f" model={payload.get('model')}"
+        )
+    if resp.status_code == 403:
+        raise SeedanceError(
+            "火山方舟拒绝访问（403）：可能未开通该模型/接入点或余额不足。"
+            f" model={payload.get('model')} 详情：{resp.text[:240]}"
+        )
+    if resp.status_code >= 400:
+        raise SeedanceError(f"方舟提交失败: {resp.status_code} {resp.text[:400]}")
+    data = resp.json()
+    task_id = data.get("id") or data.get("task_id")
+    if not task_id:
+        raise SeedanceError(f"方舟未返回任务 ID: {data}")
+    return f"ark:{task_id}"
 
 
 async def _poll_ark(channel: Channel, task_id: str) -> tuple[str, str | None]:
@@ -354,17 +389,16 @@ async def _poll_ark(channel: Channel, task_id: str) -> tuple[str, str | None]:
     url = f"{base}/api/v3/contents/generations/tasks/{raw}"
     headers = {"Authorization": f"Bearer {channel.api_key.strip()}"}
 
-    async with _client(timeout=90.0, force_direct=ark_should_force_direct(base)) as client:
-        resp = await client.get(url, headers=headers)
-        if resp.status_code == 404:
-            return "running", None
-        if resp.status_code == 401:
-            raise SeedanceError("方舟状态查询认证失败（401），请检查超管渠道 Key")
-        if resp.status_code == 429:
-            return "rate_limited", None
-        if resp.status_code >= 400:
-            raise SeedanceError(f"方舟状态查询失败: {resp.status_code} {resp.text[:300]}")
-        data = resp.json()
+    resp = await _ark_http(channel, "GET", url, headers=headers)
+    if resp.status_code == 404:
+        return "running", None
+    if resp.status_code == 401:
+        raise SeedanceError("方舟状态查询认证失败（401），请检查超管渠道 Key")
+    if resp.status_code == 429:
+        return "rate_limited", None
+    if resp.status_code >= 400:
+        raise SeedanceError(f"方舟状态查询失败: {resp.status_code} {resp.text[:300]}")
+    data = resp.json()
 
     st = str(data.get("status") or "").lower()
     if st in {"queued", "pending", "running", "processing", "in_progress"}:

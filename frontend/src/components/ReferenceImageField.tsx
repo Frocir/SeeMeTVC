@@ -15,7 +15,7 @@ export default function ReferenceImageField({
   value,
   onChange,
   label = "参考图",
-  hint = "可粘贴 URL，或从本地上传",
+  hint = "png / webp / 大图都可以，出片时会自动压缩",
   placeholder = "https://… 或上传后自动填入",
   disabled = false,
   disabledHint,

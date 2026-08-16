@@ -31,6 +31,16 @@ ALLOWED_MIME = {
     "image/gif",
 }
 MAX_BYTES = 10 * 1024 * 1024
+# Decoded JPEG size sent as data-URI. Ark often RST above ~4MB JSON.
+INLINE_TARGET = 1_200_000
+INLINE_HARD_MAX = 3_500_000
+_SHRINK_PASSES = (
+    (1600, 3),
+    (1280, 4),
+    (1024, 5),
+    (768, 6),
+    (640, 8),
+)
 VIDEO_EXT = {".mp4", ".webm", ".mov"}
 VIDEO_MIME = {"video/mp4", "video/webm", "video/quicktime"}
 MAX_VIDEO_BYTES = 80 * 1024 * 1024
@@ -98,6 +108,73 @@ def _bytes_to_data_uri(raw: bytes, mime: str | None = None) -> str:
     return f"data:{mt};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
+async def _maybe_shrink_image(path: Path | None, raw: bytes, mime: str) -> tuple[bytes, str]:
+    """Auto-convert/compress stills for Ark. Keep the original file; only shrink the inline payload."""
+    if len(raw) <= INLINE_TARGET:
+        return raw, mime
+
+    import tempfile
+
+    from app.services.media_ops import ffmpeg_bin, run_ffmpeg
+
+    src = str(path) if path is not None and path.is_file() else ""
+    tmp_in = ""
+    if not src:
+        hin = tempfile.NamedTemporaryFile(suffix=".img", delete=False)
+        hin.write(raw)
+        hin.close()
+        tmp_in = hin.name
+        src = tmp_in
+
+    best = raw
+    try:
+        ffmpeg = ffmpeg_bin()
+        for width, quality in _SHRINK_PASSES:
+            hout = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            hout.close()
+            tmp_out = hout.name
+            try:
+                await run_ffmpeg(
+                    [
+                        ffmpeg,
+                        "-y",
+                        "-i",
+                        src,
+                        "-vf",
+                        rf"scale=min({width}\,iw):-2",
+                        "-q:v",
+                        str(quality),
+                        tmp_out,
+                    ]
+                )
+                out = Path(tmp_out).read_bytes()
+                if out and (best is raw or len(out) < len(best)):
+                    best = out
+                if out and len(out) <= INLINE_TARGET:
+                    return out, "image/jpeg"
+            except Exception:  # noqa: BLE001
+                continue
+            finally:
+                try:
+                    Path(tmp_out).unlink(missing_ok=True)
+                except OSError:
+                    pass
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        if tmp_in:
+            try:
+                Path(tmp_in).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    if best is not raw:
+        mime = "image/jpeg"
+    if len(best) <= INLINE_HARD_MAX:
+        return best, mime
+    raise RuntimeError("参考图自动压缩失败，出片网关吃不下这么大的图。请确认本机 ffmpeg 可用后再试。")
+
+
 def _is_non_public_host(host: str | None) -> bool:
     if not host:
         return True
@@ -148,7 +225,8 @@ async def async_resolve_image_for_upstream(image_url: str | None) -> str | None:
     path = local_upload_path(image_url)
     if path is not None:
         mime = MIME_BY_EXT.get(path.suffix.lower(), "application/octet-stream")
-        return _bytes_to_data_uri(path.read_bytes(), mime)
+        raw, mime = await _maybe_shrink_image(path, path.read_bytes(), mime)
+        return _bytes_to_data_uri(raw, mime)
 
     if not needs_inline_for_upstream(image_url):
         return image_url
@@ -175,6 +253,7 @@ async def async_resolve_image_for_upstream(image_url: str | None) -> str | None:
             if mime not in ALLOWED_MIME:
                 ext = Path(urlparse(fetch_url).path).suffix.lower()
                 mime = MIME_BY_EXT.get(ext, "image/jpeg")
+            raw, mime = await _maybe_shrink_image(None, raw, mime)
             return _bytes_to_data_uri(raw, mime)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(

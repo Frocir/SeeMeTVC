@@ -18,7 +18,6 @@ from app.services import llm as llm_svc
 from app.services import tts as tts_svc
 from app.services.ledger import KIND_CHARGE, KIND_REFUND, record_entry
 from app.services.project_assets import (
-    delete_ephemeral_run,
     is_video_url,
     prune_runs_keep_current,
     refresh_cover,
@@ -1559,7 +1558,6 @@ async def execute_run(run_id: int) -> None:
 
             await db.refresh(run)
             if run.status == WorkflowRunStatus.CANCELLED.value:
-                await delete_ephemeral_run(db, run)
                 await db.commit()
                 return
 
@@ -1633,8 +1631,6 @@ async def execute_run(run_id: int) -> None:
                     run.cost = 0.0
                 run.balance_after = user.balance
                 await db.commit()
-                await delete_ephemeral_run(db, run)
-                await db.commit()
                 return
 
             refund = round(sum(charged), 4)
@@ -1660,6 +1656,4 @@ async def execute_run(run_id: int) -> None:
                     st["status"] = "failed"
                     st["error"] = str(exc)[:500]
             run.node_states_json = json.dumps(node_states, ensure_ascii=False)
-            await db.commit()
-            await delete_ephemeral_run(db, run)
             await db.commit()

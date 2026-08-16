@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import { useShowAdmin } from "../flags";
 import {
   api,
   isActiveJob,
@@ -25,6 +26,7 @@ function upsertJob(list: Job[], fresh: Job) {
 
 export default function StudioPage() {
   const { me, refresh } = useAuth();
+  const showAdmin = useShowAdmin();
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelId, setModelId] = useState("");
   const [prompt, setPrompt] = useState(BEAUTY_PROMOS[0].prompt);
@@ -170,7 +172,7 @@ export default function StudioPage() {
               <p className="muted">
                 请超管在「超管」页对 Seedance Lite / 2.5 填写<strong>火山方舟 ARK_API_KEY</strong>并启用。
               </p>
-              {me?.role === "super_admin" && (
+              {showAdmin && me?.role === "super_admin" && (
                 <Link className="linkish" to="/admin">
                   去超管启用渠道 →
                 </Link>

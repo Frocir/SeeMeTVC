@@ -15,6 +15,7 @@ import {
   type AgentViewport,
   type ModelOption,
 } from "../api";
+import { DEFAULT_AGENT_MODEL_ID } from "../llmIds";
 import { NODE_TYPE_LABEL } from "./labels";
 
 type ToolLine = { name: string; status: string; detail: string };
@@ -56,6 +57,7 @@ const TOOL_STATUS_ZH: Record<string, string> = {
 };
 
 type WorkMode = "auto" | "plan";
+type AgentChoice = { id: string; label: string; hint?: string };
 
 const WORK_MODES: { id: WorkMode; label: string; title: string }[] = [
   { id: "auto", label: "Auto", title: "不要计划，齐了就干，中途不停" },
@@ -65,6 +67,62 @@ const WORK_MODES: { id: WorkMode; label: string; title: string }[] = [
 function normalizeWorkMode(raw?: string): WorkMode {
   if (raw === "auto" || raw === "goal") return "auto";
   return "plan";
+}
+
+function AgentChoiceCard({
+  prompt,
+  options,
+  defaultId,
+  disabled,
+  submitLabel = "确认",
+  onSubmit,
+}: {
+  prompt: string;
+  options: AgentChoice[];
+  defaultId?: string;
+  disabled?: boolean;
+  submitLabel?: string;
+  onSubmit: (id: string) => void;
+}) {
+  const [picked, setPicked] = useState(defaultId || options[0]?.id || "");
+
+  return (
+    <div className="cv-agent-choice">
+      <p className="cv-agent-choice-prompt">{prompt}</p>
+      <div className="cv-agent-choice-list" role="radiogroup" aria-label={prompt}>
+        {options.map((opt) => {
+          const on = picked === opt.id;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              className={`cv-agent-choice-opt${on ? " is-on" : ""}`}
+              disabled={disabled}
+              onClick={() => setPicked(opt.id)}
+            >
+              <span className="cv-agent-choice-radio" aria-hidden />
+              <span className="cv-agent-choice-copy">
+                <strong>{opt.label}</strong>
+                {opt.hint ? <em>{opt.hint}</em> : null}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="cv-agent-choice-foot">
+        <button
+          type="button"
+          className="cv-agent-choice-go"
+          disabled={disabled || !picked}
+          onClick={() => onSubmit(picked)}
+        >
+          {submitLabel}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function formatToolLine(t: ToolLine): string {
@@ -93,7 +151,7 @@ export default function TvcAgentPanel({
   onBeforeSend,
 }: Props) {
   const preferred =
-    models[0]?.model_id || "";
+    models.find((m) => m.model_id === DEFAULT_AGENT_MODEL_ID)?.model_id || models[0]?.model_id || "";
   const [modelId, setModelId] = useState(preferred);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [skillId, setSkillId] = useState("");
@@ -107,6 +165,7 @@ export default function TvcAgentPanel({
   const [confirm, setConfirm] = useState<AgentConfirm | null>(null);
   const [plan, setPlan] = useState<AgentPlan | null>(null);
   const [stage, setStage] = useState<AgentStageCard | null>(null);
+  const [autoSwitchAsk, setAutoSwitchAsk] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -129,10 +188,10 @@ export default function TvcAgentPanel({
         setMessages(s.messages || []);
         if (s.skill_id) setSkillId(s.skill_id);
         setWorkMode(normalizeWorkMode(s.work_mode));
-        if (s.model_id) setModelId(s.model_id);
         setConfirm(s.pending_confirm);
         setPlan(s.pending_plan || null);
         setStage(s.pending_stage || null);
+        setAutoSwitchAsk(false);
         onLocked(s.status === "confirm_pending" || s.status === "running");
       })
       .catch(() => undefined);
@@ -141,7 +200,7 @@ export default function TvcAgentPanel({
   useEffect(() => {
     const el = threadRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, busy, streamText, tools, confirm]);
+  }, [messages, busy, streamText, tools, confirm, plan, stage, autoSwitchAsk]);
 
   function resizeArea() {
     const el = areaRef.current;
@@ -174,16 +233,19 @@ export default function TvcAgentPanel({
         setConfirm(c);
         setPlan(null);
         setStage(null);
+        setAutoSwitchAsk(false);
       },
       onPlan: (p: AgentPlan) => {
         setPlan(p);
         setStage(null);
         setConfirm(null);
+        setAutoSwitchAsk(false);
       },
       onStage: (s: AgentStageCard) => {
         setStage(s);
         setPlan(null);
         setConfirm(null);
+        setAutoSwitchAsk(false);
       },
       onChatCleared: () => {
         setMessages([]);
@@ -192,6 +254,7 @@ export default function TvcAgentPanel({
         setConfirm(null);
         setPlan(null);
         setStage(null);
+        setAutoSwitchAsk(false);
       },
       onError: (d: string) => setError(d),
       onDone: (status: string) => {
@@ -205,10 +268,12 @@ export default function TvcAgentPanel({
           setPlan(null);
           setStage(null);
           setConfirm(null);
+          setAutoSwitchAsk(false);
         }
         if (status === "confirm_pending") {
           setPlan(null);
           setStage(null);
+          setAutoSwitchAsk(false);
         }
         setBusy(false);
         onLocked(status === "confirm_pending" || status === "running");
@@ -279,6 +344,7 @@ export default function TvcAgentPanel({
     setConfirm(null);
     setPlan(null);
     setStage(null);
+    setAutoSwitchAsk(false);
     setBusy(false);
     onLocked(false);
     if (!workflowId) {
@@ -302,17 +368,23 @@ export default function TvcAgentPanel({
     areaRef.current?.focus();
   }
 
-  async function resumeAction(action: string, accept = true) {
+  function echoChoice(label: string) {
+    setMessages((ms) => [...ms, { id: Date.now(), role: "user", content: label }]);
+  }
+
+  async function resumeAction(action: string, accept = true, label = "") {
     if (!workflowId || busy) return;
     if (action === "revise") {
       focusDraft();
       return;
     }
+    if (label) echoChoice(label);
     setBusy(true);
     onLocked(action === "approve" || action === "confirm" || action === "skip_to_auto");
-    if (action === "cancel") {
+    if (action === "cancel" || action === "approve" || action === "skip_to_auto") {
       setPlan(null);
       setStage(null);
+      setAutoSwitchAsk(false);
     }
     if (action === "confirm" || action === "reject") setConfirm(null);
     try {
@@ -335,8 +407,61 @@ export default function TvcAgentPanel({
     }
   }
 
-  async function resume(accept: boolean) {
-    await resumeAction(accept ? "confirm" : "reject", accept);
+  async function skipToAuto(label: string) {
+    if (!workflowId || busy) return;
+    setWorkMode("auto");
+    setBusy(true);
+    onLocked(true);
+    try {
+      const out = await patchAgentSession(workflowId, { work_mode: "auto" });
+      setError("");
+      if (!out.switch_auto) {
+        setWorkMode("plan");
+        setBusy(false);
+        setAutoSwitchAsk(false);
+        onLocked(false);
+        return;
+      }
+      echoChoice(label);
+      setAutoSwitchAsk(false);
+      setPlan(null);
+      setStage(null);
+      await streamAgentResume(
+        {
+          workflow_id: workflowId,
+          accept: true,
+          action: "skip_to_auto",
+          selected_node_id: selectedNodeId || "",
+          viewport,
+        },
+        bindHandlers(),
+        (abortRef.current = new AbortController()).signal,
+      );
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      setWorkMode("plan");
+      setAutoSwitchAsk(false);
+      setError(e instanceof Error ? e.message : "无法切换到 Auto");
+      setBusy(false);
+      onLocked(false);
+    }
+  }
+
+  function pickChoice(id: string, label: string) {
+    if (id === "revise") {
+      focusDraft();
+      return;
+    }
+    if (id === "stay") {
+      setAutoSwitchAsk(false);
+      return;
+    }
+    if (id === "skip_auto") {
+      void skipToAuto(label);
+      return;
+    }
+    const accept = id === "approve" || id === "confirm";
+    void resumeAction(id, accept, label);
   }
 
   return (
@@ -403,7 +528,7 @@ export default function TvcAgentPanel({
           </div>
         )}
         {plan && !confirm && (
-          <div className="cv-agent-confirm cv-agent-plan">
+          <div className="cv-agent-plan">
             <p>
               <strong>{plan.title || "片子方案"}</strong>
               {plan.rebuild ? " · 重搭画布" : ""}
@@ -422,21 +547,10 @@ export default function TvcAgentPanel({
                 )}
               </div>
             ))}
-            <div className="cv-agent-confirm-actions">
-              <button type="button" className="cv-agent-confirm-yes" disabled={busy} onClick={() => void resumeAction("approve")}>
-                批准计划
-              </button>
-              <button type="button" className="ghost" disabled={busy} onClick={() => focusDraft()}>
-                先改
-              </button>
-              <button type="button" className="ghost" disabled={busy} onClick={() => void resumeAction("cancel")}>
-                取消
-              </button>
-            </div>
           </div>
         )}
         {stage && !confirm && !plan && (
-          <div className="cv-agent-confirm cv-agent-plan">
+          <div className="cv-agent-plan">
             <p>
               下一环：<strong>{stage.title}</strong>
             </p>
@@ -449,40 +563,87 @@ export default function TvcAgentPanel({
             ) : (
               <p className="cv-agent-confirm-meta">点开始我就做这一环，出片还要再问你。</p>
             )}
-            <div className="cv-agent-confirm-actions">
-              <button type="button" className="cv-agent-confirm-yes" disabled={busy} onClick={() => void resumeAction("approve")}>
-                {stage.start_label || "开始"}
-              </button>
-              <button type="button" className="ghost" disabled={busy} onClick={() => focusDraft()}>
-                先改
-              </button>
-              <button type="button" className="ghost" disabled={busy} onClick={() => void resumeAction("cancel")}>
-                取消计划
-              </button>
-            </div>
           </div>
         )}
+        {autoSwitchAsk && (plan || stage) && !confirm && (
+          <AgentChoiceCard
+            key="auto-switch"
+            prompt="切到 Auto？"
+            disabled={busy}
+            options={[
+              {
+                id: "skip_auto",
+                label: "切到 Auto，立刻续跑",
+                hint: "跳过剩余创作闸门，扣费生成仍会再问你",
+              },
+              { id: "stay", label: "留在 Plan", hint: "模式不变，计划还在" },
+            ]}
+            onSubmit={(id) =>
+              pickChoice(id, id === "skip_auto" ? "切到 Auto，立刻续跑" : "留在 Plan")
+            }
+          />
+        )}
+        {plan && !confirm && !autoSwitchAsk && (
+          <AgentChoiceCard
+            key="plan"
+            prompt="方案可以按这个来？"
+            disabled={busy}
+            options={[
+              { id: "approve", label: "批准计划", hint: "下一步会先让你点开始 Brief" },
+              { id: "revise", label: "先改", hint: "在下面补充，我会重出方案" },
+              { id: "cancel", label: "取消计划" },
+            ]}
+            onSubmit={(id) =>
+              pickChoice(
+                id,
+                id === "approve" ? "批准计划" : id === "cancel" ? "取消计划" : "先改",
+              )
+            }
+          />
+        )}
+        {stage && !confirm && !plan && !autoSwitchAsk && (
+          <AgentChoiceCard
+            key={`stage-${stage.stage}`}
+            prompt={`开始「${stage.title}」这一环？`}
+            disabled={busy}
+            options={[
+              {
+                id: "approve",
+                label: stage.start_label || "开始",
+                hint: "只做这一环，出片还要再问你",
+              },
+              { id: "revise", label: "先改", hint: "在下面说要改什么" },
+              { id: "cancel", label: "取消计划" },
+            ]}
+            onSubmit={(id) =>
+              pickChoice(
+                id,
+                id === "approve"
+                  ? stage.start_label || "开始"
+                  : id === "cancel"
+                    ? "取消计划"
+                    : "先改",
+              )
+            }
+          />
+        )}
         {confirm && (
-          <div className="cv-agent-confirm">
-            <p>
-              要生成「{confirm.label}」了
-              {confirm.node_type ? `（${NODE_TYPE_LABEL[confirm.node_type] || confirm.node_type}）` : ""}
-            </p>
-            <p className="cv-agent-confirm-wait">
-              {confirm.message || "确认前不会开始生成，也不会扣费。"}
-            </p>
-            <p className="cv-agent-confirm-meta">
-              模型 {confirm.model_id || "—"} · 预估 {confirm.estimated_cost} {confirm.unit || "积分"}
-            </p>
-            <div className="cv-agent-confirm-actions">
-              <button type="button" className="cv-agent-confirm-yes" disabled={busy} onClick={() => void resume(true)}>
-                确认开始
-              </button>
-              <button type="button" className="ghost" disabled={busy} onClick={() => void resume(false)}>
-                取消
-              </button>
-            </div>
-          </div>
+          <AgentChoiceCard
+            key={`confirm-${confirm.node_id}`}
+            prompt={`要生成「${confirm.label}」了${
+              confirm.node_type ? `（${NODE_TYPE_LABEL[confirm.node_type] || confirm.node_type}）` : ""
+            }`}
+            disabled={busy}
+            options={[
+              {
+                id: "confirm",
+                label: "确认开始",
+                hint: `${confirm.message || "确认前不会开始生成，也不会扣费。"} 模型 ${confirm.model_id || "—"} · 预估 ${confirm.estimated_cost} ${confirm.unit || "积分"}`,
+              },
+              { id: "reject", label: "取消" },
+            ]}
+            onSubmit={(id) => pickChoice(id, id === "confirm" ? "确认开始" : "取消生成")}
+          />
         )}
         {error && <p className="cv-agent-error">{error}</p>}
       </div>
@@ -529,9 +690,10 @@ export default function TvcAgentPanel({
               const next = normalizeWorkMode(e.target.value);
               const prev = workMode;
               if (next === "auto" && (plan || stage)) {
-                const ok = window.confirm("待批切到 Auto 会立刻续跑并跳过剩余创作闸门。若只想下次用 Auto，请先取消计划。");
-                if (!ok) return;
+                setAutoSwitchAsk(true);
+                return;
               }
+              setAutoSwitchAsk(false);
               setWorkMode(next);
               void persistSession({ work_mode: next }).then((ok) => {
                 if (!ok) setWorkMode(prev);

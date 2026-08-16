@@ -185,10 +185,14 @@ async def _probe_ark(channel: Channel, started: float) -> ProbeResult:
     url = f"{base}/api/v3/models"
     headers = {"Authorization": f"Bearer {key}"}
     try:
-        async with make_async_client(timeout=PROBE_TIMEOUT) as client:
+        from app.services.seedance import ark_should_force_direct
+
+        async with make_async_client(
+            timeout=PROBE_TIMEOUT, force_direct=ark_should_force_direct(base)
+        ) as client:
             resp = await client.get(url, headers=headers)
     except Exception as exc:  # noqa: BLE001
-        return ProbeResult(False, f"连不上方舟：{exc}", _ms(started), url)
+        return ProbeResult(False, f"连不上方舟视频网关：{exc}", _ms(started), url)
     if resp.status_code >= 400:
         return ProbeResult(False, f"方舟 HTTP {resp.status_code}：{_clip(resp.text)}", _ms(started), url)
     return ProbeResult(True, "火山方舟探活成功", _ms(started), url)

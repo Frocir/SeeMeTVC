@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { useShowAdmin } from "../flags";
 import {
   Background,
   BackgroundVariant,
@@ -130,6 +131,7 @@ function applyMediaFromOutput(data: WfData, output?: Record<string, unknown> | n
 export default function WorkflowCanvasPage() {
   const { me, refresh } = useAuth();
   const isAdmin = me?.role === "super_admin";
+  const showAdmin = useShowAdmin();
   const { workflowId: idParam } = useParams();
   const navigate = useNavigate();
   const routeId = Number(idParam);
@@ -669,9 +671,9 @@ export default function WorkflowCanvasPage() {
             type="button"
             className="cv-chip-btn"
             onClick={() => setGuideOpen(true)}
-            title="新手引导"
+            title="新手教程演示"
           >
-            引导
+            新手教程演示
           </button>
           <button
             type="button"
@@ -691,7 +693,7 @@ export default function WorkflowCanvasPage() {
           <strong>无法生成</strong>
           <span>
             {error || runBlock}
-            {!modelId && isAdmin && (
+            {!modelId && showAdmin && isAdmin && (
               <>
                 {" "}
                 打开 <Link to="/admin">超管</Link>

@@ -19,6 +19,14 @@ from app.services.skills_loader import get_skill
 MAX_TOOL_ROUNDS = 12
 USER_TURNS = 16
 STALE_RUNNING_SEC = 600
+_STUB_ORPHAN = json.dumps(
+    {"error": "这次工具没有回传结果（上次出片或确认中断了）。请再调用一次。"},
+    ensure_ascii=False,
+)
+_STUB_SKIPPED = json.dumps(
+    {"error": "这一轮里后面的步骤还没跑。请等上一笔完成后再单独调用。", "skipped": True},
+    ensure_ascii=False,
+)
 
 WORK_MODES = ("auto", "plan")
 WORK_MODE_ALIASES = {
@@ -338,6 +346,8 @@ async def _loop(
     wrote = False
     try:
         for _ in range(MAX_TOOL_ROUNDS):
+            messages[:], stubs = repair_tool_messages(messages)
+            await _persist_tool_stubs(db, session, stubs)
             await db.refresh(session)
             await db.refresh(workflow)
             ctx.workflow = workflow
@@ -368,14 +378,14 @@ async def _loop(
                     "content": None,
                     "tool_calls": [
                         {
-                            "id": c.get("id"),
+                            "id": str(c.get("id") or c.get("name") or f"toolu_{idx}"),
                             "type": "function",
                             "function": {
                                 "name": c.get("name"),
                                 "arguments": json.dumps(c.get("arguments") or {}, ensure_ascii=False),
                             },
                         }
-                        for c in calls
+                        for idx, c in enumerate(calls)
                     ],
                 }
                 messages.append(assistant_tool)
@@ -389,32 +399,14 @@ async def _loop(
                 )
                 await db.commit()
                 paused = False
-                for c in calls:
-                    name = str(c.get("name") or "")
-                    args = c.get("arguments") if isinstance(c.get("arguments"), dict) else {}
-                    call_id = str(c.get("id") or name)
-                    deny = gates.deny_reason(session, name, args)
-                    if deny:
-                        result = json.dumps({"error": deny}, ensure_ascii=False)
-                        messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
-                        db.add(
-                            AgentMessage(
-                                session_id=session.id,
-                                role="tool",
-                                content=result[:8000],
-                                meta_json=json.dumps({"tool_call_id": call_id, "name": name}, ensure_ascii=False),
-                            )
-                        )
-                        await emit("tool", {"name": name, "status": "error", "detail": deny[:240]})
-                        await db.commit()
-                        continue
-                    if name in mcp_server.RUN_TOOLS:
-                        await db.refresh(workflow)
-                        graph = graph_ops.parse_graph(workflow.graph_json)
-                        try:
-                            est = await mcp_server.estimate_run_cost(db, graph, str(args.get("node_id") or ""))
-                        except Exception as exc:  # noqa: BLE001
-                            result = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                try:
+                    for c in calls:
+                        name = str(c.get("name") or "")
+                        args = c.get("arguments") if isinstance(c.get("arguments"), dict) else {}
+                        call_id = str(c.get("id") or name)
+                        deny = gates.deny_reason(session, name, args)
+                        if deny:
+                            result = json.dumps({"error": deny}, ensure_ascii=False)
                             messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
                             db.add(
                                 AgentMessage(
@@ -424,111 +416,148 @@ async def _loop(
                                     meta_json=json.dumps({"tool_call_id": call_id, "name": name}, ensure_ascii=False),
                                 )
                             )
-                            await emit("tool", {"name": name, "status": "error", "detail": str(exc)[:240]})
-                            continue
-                        if est.get("needs_confirm"):
-                            from app.config import get_settings
-
-                            conf = {
-                                **est,
-                                "unit": get_settings().balance_unit_label,
-                                "message": "确认前不会开始生成，也不会扣费。",
-                            }
-                            session.status = "confirm_pending"
-                            prev = gates.parse_gate(session.pending_json) or {}
-                            session.pending_json = json.dumps(
-                                {
-                                    "tool_name": name,
-                                    "tool_call_id": call_id,
-                                    "arguments": args,
-                                    "messages": messages,
-                                    "confirm": conf,
-                                    "kind": prev.get("kind") or "plan_run",
-                                    "stage": prev.get("stage") or "shoot",
-                                    "plan": prev.get("plan") or gates.normalize_plan(None),
-                                    "completed": prev.get("completed") or [],
-                                    "executing": True,
-                                },
-                                ensure_ascii=False,
-                            )
+                            await emit("tool", {"name": name, "status": "error", "detail": deny[:240]})
                             await db.commit()
-                            await db.refresh(workflow)
-                            ctx.workflow = workflow
-                            await mcp_server.maybe_autolayout(ctx)
-                            await emit(
-                                "tool",
-                                {
-                                    "name": name,
-                                    "status": "waiting",
-                                    "detail": mcp_server.tool_progress_detail(name, "waiting"),
-                                },
-                            )
-                            await emit("confirm_required", conf)
-                            await emit("done", {"status": "confirm_pending"})
-                            paused = True
-                            break
-                    await emit(
-                        "tool",
-                        {
-                            "name": name,
-                            "status": "running",
-                            "detail": mcp_server.tool_progress_detail(name, "running"),
-                        },
-                    )
-                    try:
-                        result = await mcp_server.call_tool(ctx, name, args)
+                            continue
+                        if name in mcp_server.RUN_TOOLS:
+                            try:
+                                await db.refresh(workflow)
+                                ctx.workflow = workflow
+                            except Exception:
+                                pass
+                            graph = graph_ops.parse_graph(workflow.graph_json)
+                            try:
+                                est = await mcp_server.estimate_run_cost(db, graph, str(args.get("node_id") or ""))
+                            except Exception as exc:  # noqa: BLE001
+                                result = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                                messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+                                db.add(
+                                    AgentMessage(
+                                        session_id=session.id,
+                                        role="tool",
+                                        content=result[:8000],
+                                        meta_json=json.dumps({"tool_call_id": call_id, "name": name}, ensure_ascii=False),
+                                    )
+                                )
+                                await emit("tool", {"name": name, "status": "error", "detail": str(exc)[:240]})
+                                continue
+                            if est.get("needs_confirm"):
+                                from app.config import get_settings
+
+                                await _stub_remaining_calls(
+                                    db, session, messages, calls, except_id=call_id
+                                )
+                                conf = {
+                                    **est,
+                                    "unit": get_settings().balance_unit_label,
+                                    "message": "确认前不会开始生成，也不会扣费。",
+                                }
+                                session.status = "confirm_pending"
+                                prev = gates.parse_gate(session.pending_json) or {}
+                                session.pending_json = json.dumps(
+                                    {
+                                        "tool_name": name,
+                                        "tool_call_id": call_id,
+                                        "arguments": args,
+                                        "messages": messages,
+                                        "confirm": conf,
+                                        "kind": prev.get("kind") or "plan_run",
+                                        "stage": prev.get("stage") or "shoot",
+                                        "plan": prev.get("plan") or gates.normalize_plan(None),
+                                        "completed": prev.get("completed") or [],
+                                        "executing": True,
+                                    },
+                                    ensure_ascii=False,
+                                )
+                                await db.commit()
+                                try:
+                                    await db.refresh(workflow)
+                                    ctx.workflow = workflow
+                                except Exception:
+                                    pass
+                                await mcp_server.maybe_autolayout(ctx)
+                                await emit(
+                                    "tool",
+                                    {
+                                        "name": name,
+                                        "status": "waiting",
+                                        "detail": mcp_server.tool_progress_detail(name, "waiting"),
+                                    },
+                                )
+                                await emit("confirm_required", conf)
+                                await emit("done", {"status": "confirm_pending"})
+                                paused = True
+                                break
                         await emit(
                             "tool",
                             {
                                 "name": name,
-                                "status": "done",
-                                "detail": mcp_server.tool_done_detail(name, result),
+                                "status": "running",
+                                "detail": mcp_server.tool_progress_detail(name, "running"),
                             },
                         )
-                    except Exception as exc:  # noqa: BLE001
-                        result = json.dumps({"error": str(exc)}, ensure_ascii=False)
-                        await emit("tool", {"name": name, "status": "error", "detail": str(exc)[:240]})
-                    messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
-                    db.add(
-                        AgentMessage(
-                            session_id=session.id,
-                            role="tool",
-                            content=result[:8000],
-                            meta_json=json.dumps({"tool_call_id": call_id, "name": name}, ensure_ascii=False),
+                        try:
+                            result = await mcp_server.call_tool(ctx, name, args)
+                            await emit(
+                                "tool",
+                                {
+                                    "name": name,
+                                    "status": "done",
+                                    "detail": mcp_server.tool_done_detail(name, result),
+                                },
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            result = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                            await emit("tool", {"name": name, "status": "error", "detail": str(exc)[:240]})
+                        messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+                        db.add(
+                            AgentMessage(
+                                session_id=session.id,
+                                role="tool",
+                                content=result[:8000],
+                                meta_json=json.dumps({"tool_call_id": call_id, "name": name}, ensure_ascii=False),
+                            )
                         )
-                    )
-                    await db.commit()
-                    await db.refresh(workflow)
-                    ctx.workflow = workflow
-                    if name in {
-                        "add_node",
-                        "patch_node",
-                        "connect",
-                        "delete_node",
-                        "layout_graph",
-                        "send_asset_to_canvas",
-                        "expand_scenes_to_nodes",
-                        "run_llm_text",
-                        "run_video_reverse_prompt",
-                    }:
-                        wrote = True
-                    if name == "propose_plan":
-                        payload = _loads(result) if isinstance(_loads(result), dict) else {}
-                        plan = payload.get("plan") if isinstance(payload, dict) else None
-                        await _pause_plan(db, session, emit, plan if isinstance(plan, dict) else args, acc_text)
-                        paused = True
-                        break
-                    if name == "complete_stage":
-                        await _hold_stage(db, session, emit, completed=True)
-                        paused = True
-                        break
-                    if ctx.chat_cleared:
-                        keep = 0
-                        for i, m in enumerate(messages):
-                            if m.get("role") == "assistant" and m.get("tool_calls"):
-                                keep = i
-                        messages[:] = messages[keep:]
-                        ctx.chat_cleared = False
+                        await db.commit()
+                        try:
+                            await db.refresh(workflow)
+                            ctx.workflow = workflow
+                        except Exception:
+                            pass
+                        if name in {
+                            "add_node",
+                            "patch_node",
+                            "connect",
+                            "delete_node",
+                            "layout_graph",
+                            "send_asset_to_canvas",
+                            "expand_scenes_to_nodes",
+                            "run_llm_text",
+                            "run_video_reverse_prompt",
+                        }:
+                            wrote = True
+                        if name == "propose_plan":
+                            payload = _loads(result) if isinstance(_loads(result), dict) else {}
+                            plan = payload.get("plan") if isinstance(payload, dict) else None
+                            await _stub_remaining_calls(db, session, messages, calls, except_id=call_id)
+                            await _pause_plan(db, session, emit, plan if isinstance(plan, dict) else args, acc_text)
+                            paused = True
+                            break
+                        if name == "complete_stage":
+                            await _stub_remaining_calls(db, session, messages, calls, except_id=call_id)
+                            await _hold_stage(db, session, emit, completed=True)
+                            paused = True
+                            break
+                        if ctx.chat_cleared:
+                            keep = 0
+                            for i, m in enumerate(messages):
+                                if m.get("role") == "assistant" and m.get("tool_calls"):
+                                    keep = i
+                            messages[:] = messages[keep:]
+                            ctx.chat_cleared = False
+                finally:
+                    if not paused:
+                        await _stub_remaining_calls(db, session, messages, calls, except_id="")
                 if paused:
                     return
                 continue
@@ -580,6 +609,69 @@ def _system_prompt(session: AgentSession, workflow: Workflow, selected_id: str) 
     return "\n\n".join(parts)
 
 
+def repair_tool_messages(
+    messages: list[dict[str, Any]], *, stub: str = _STUB_ORPHAN
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Ensure every assistant tool_use is immediately followed by all tool_results."""
+    existing = {
+        str(m.get("tool_call_id") or "")
+        for m in messages
+        if m.get("role") == "tool" and m.get("tool_call_id")
+    }
+    aligned = llm_svc.align_messages_for_tools(messages)
+    added: list[dict[str, Any]] = []
+    for m in aligned:
+        if m.get("role") != "tool":
+            continue
+        tid = str(m.get("tool_call_id") or "")
+        if tid and tid not in existing:
+            if stub != _STUB_ORPHAN:
+                m = {**m, "content": stub}
+            added.append(m)
+    return aligned, added
+
+
+async def _persist_tool_stubs(
+    db: AsyncSession, session: AgentSession, stubs: list[dict[str, Any]]
+) -> None:
+    if not stubs:
+        return
+    for row in stubs:
+        db.add(
+            AgentMessage(
+                session_id=session.id,
+                role="tool",
+                content=str(row.get("content") or "")[:8000],
+                meta_json=json.dumps(
+                    {"tool_call_id": str(row.get("tool_call_id") or ""), "name": "", "stub": True},
+                    ensure_ascii=False,
+                ),
+            )
+        )
+    await db.commit()
+
+
+async def _stub_remaining_calls(
+    db: AsyncSession,
+    session: AgentSession,
+    messages: list[dict[str, Any]],
+    calls: list[dict[str, Any]],
+    *,
+    except_id: str,
+) -> None:
+    seen = {str(m.get("tool_call_id") or "") for m in messages if m.get("role") == "tool"}
+    stubs: list[dict[str, Any]] = []
+    for c in calls:
+        cid = str(c.get("id") or c.get("name") or "")
+        if not cid or cid == except_id or cid in seen:
+            continue
+        row = {"role": "tool", "tool_call_id": cid, "content": _STUB_SKIPPED}
+        messages.append(row)
+        stubs.append(row)
+        seen.add(cid)
+    await _persist_tool_stubs(db, session, stubs)
+
+
 async def _llm_messages(db: AsyncSession, session: AgentSession) -> list[dict[str, Any]]:
     result = await db.execute(
         select(AgentMessage).where(AgentMessage.session_id == session.id).order_by(AgentMessage.id.asc())
@@ -605,6 +697,15 @@ async def _llm_messages(db: AsyncSession, session: AgentSession) -> list[dict[st
             out.append({"role": "assistant", "content": None, "tool_calls": meta["tool_calls"]})
         elif m.role in {"user", "assistant"} and (m.content or "").strip():
             out.append({"role": m.role, "content": m.content})
+    # Finished tool rounds must not go back to DeepSeek; canvas state is in system.
+    last_user = max((i for i, m in enumerate(out) if m.get("role") == "user"), default=-1)
+    if last_user >= 0:
+        prefix = [
+            m
+            for m in out[: last_user + 1]
+            if m.get("role") != "tool" and not (m.get("role") == "assistant" and m.get("tool_calls"))
+        ]
+        out = prefix
     return out
 
 
@@ -776,6 +877,7 @@ async def _approve_plan(db: AsyncSession, session: AgentSession, emit: Emit) -> 
     gate["executing"] = False
     session.status = "stage_pending"
     session.pending_json = gates.dump_gate(gate)
+    db.add(AgentMessage(session_id=session.id, role="user", content="批准计划", meta_json=""))
     await db.commit()
     await _emit_gate(session, emit)
     await emit("done", {"status": "stage_pending"})
@@ -825,6 +927,7 @@ async def _start_stage(
 async def _cancel_plan(db: AsyncSession, session: AgentSession, emit: Emit) -> None:
     session.status = "idle"
     session.pending_json = ""
+    db.add(AgentMessage(session_id=session.id, role="user", content="取消计划", meta_json=""))
     await db.commit()
     await emit("done", {"status": "idle"})
 

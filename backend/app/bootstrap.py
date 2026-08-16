@@ -4,6 +4,18 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.llm_ids import (
+    CLAUDE_SONNET46_MODEL_ID,
+    DEEPSEEK_BASE,
+    DEEPSEEK_TQX_MODEL_ID,
+    DEEPSEEK_TQX_UPSTREAM,
+    DEEPSEEK_UPSTREAM,
+    DEEPSEEK_V4_PRO_MODEL_ID,
+    GPT54_MODEL_ID,
+    TQX_LLM_BASE,
+    is_tqx_llm_url,
+    llm_host,
+)
 from app.models import AssetVersion, Channel, User, UserRole, VideoJob
 from app.security import hash_password
 
@@ -14,6 +26,15 @@ LITE_CHANNEL_NAME = "Seedance Lite（火山方舟）"
 SEEDANCE25_CHANNEL_NAME = "Seedance 2.5（火山方舟）"
 OPENAI_LLM_CHANNEL_NAME = "OpenAI 兼容 · 对话"
 ANTHROPIC_LLM_CHANNEL_NAME = "Anthropic · 对话"
+CLAUDE_SONNET46_NAME = "Claude Sonnet 4.6"
+GPT54_NAME = "GPT-5.4"
+DEEPSEEK_V4_PRO_NAME = DEEPSEEK_V4_PRO_MODEL_ID
+DEEPSEEK_TQX_NAME = "DeepSeek-V4-Pro（tqx）"
+_LEGACY_TQX_CLAUDE_NAMES = (
+    "自定义兼容Anthropic · 对话",
+    "自定义兼容Anthropic对话",
+    "自定义兼容 Anthropic · 对话",
+)
 TTS_CHANNEL_NAME = "Edge TTS（aisrv）"
 OPENAI_IMAGE_CHANNEL_NAME = "OpenAI 兼容 · 图像"
 GEMINI_IMAGE_CHANNEL_NAME = "向量引擎 · Gemini 文生图"
@@ -72,6 +93,8 @@ async def ensure_bootstrap_data(db: AsyncSession) -> None:
     await _ensure_seedance_channels(db)
     await _ensure_agnes_channel(db)
     await _ensure_llm_channels(db)
+    await _ensure_tqx_llm_channels(db)
+    await _ensure_deepseek_llm_channel(db)
     await _ensure_tts_channel(db)
     await _ensure_image_channel(db)
     await _ensure_gemini_image_channel(db)
@@ -295,6 +318,160 @@ async def _ensure_llm_channels(db: AsyncSession) -> None:
         anthropic.kind = "llm"
         if not (anthropic.base_url or "").strip():
             anthropic.base_url = "https://api.anthropic.com"
+
+
+def _is_tqx_llm(ch: Channel) -> bool:
+    return is_tqx_llm_url(ch.base_url)
+
+
+def _adopt_llm_endpoint(ch: Channel, *, base_url: str, key: str = "") -> None:
+    """Never send host A's key to host B."""
+    old = llm_host(ch.base_url)
+    new = llm_host(base_url)
+    if old and new and old != new:
+        ch.api_key = key if _looks_like_real_key(key) else ""
+    elif _looks_like_real_key(key) and not _looks_like_real_key(ch.api_key):
+        ch.api_key = key
+    ch.base_url = base_url
+
+
+async def _tqx_shared_key(db: AsyncSession) -> str:
+    result = await db.execute(select(Channel).where(Channel.kind == "llm"))
+    for ch in result.scalars().all():
+        if _is_tqx_llm(ch) and _looks_like_real_key(ch.api_key):
+            return (ch.api_key or "").strip()
+    return ""
+
+
+async def _upsert_tqx_llm(
+    db: AsyncSession,
+    *,
+    name: str,
+    provider: str,
+    model_id: str,
+    upstream_model: str,
+    priority: int,
+    key: str,
+    remark: str,
+    aliases: tuple[str, ...] = (),
+) -> None:
+    ch = await _get_by_name(db, name)
+    if ch is None:
+        for alias in aliases:
+            ch = await _get_by_name(db, alias)
+            if ch is not None:
+                break
+    if ch is None:
+        result = await db.execute(
+            select(Channel).where(Channel.kind == "llm", Channel.model_id == model_id).limit(1)
+        )
+        ch = result.scalar_one_or_none()
+    if ch is not None and not _is_tqx_llm(ch):
+        ch = None
+    if ch is None:
+        db.add(
+            Channel(
+                name=name,
+                provider=provider,
+                kind="llm",
+                base_url=TQX_LLM_BASE,
+                api_key=key,
+                model_id=model_id,
+                upstream_model=upstream_model,
+                cost_per_second=0.0,
+                priority=priority,
+                enabled=_looks_like_real_key(key),
+                remark=remark,
+            )
+        )
+        return
+    ch.name = name
+    ch.provider = provider
+    ch.kind = "llm"
+    _adopt_llm_endpoint(ch, base_url=TQX_LLM_BASE, key=key)
+    ch.model_id = model_id
+    ch.upstream_model = upstream_model
+    ch.priority = priority
+    ch.remark = remark
+    if _looks_like_real_key(ch.api_key):
+        ch.enabled = True
+
+
+async def _ensure_tqx_llm_channels(db: AsyncSession) -> None:
+    """tqx 网关：Claude / GPT-5.4。Key 只从已有 tqx 渠道复制，不写死在代码里。"""
+    key = await _tqx_shared_key(db)
+    await _upsert_tqx_llm(
+        db,
+        name=CLAUDE_SONNET46_NAME,
+        provider="anthropic",
+        model_id=CLAUDE_SONNET46_MODEL_ID,
+        upstream_model=CLAUDE_SONNET46_MODEL_ID,
+        priority=80,
+        key=key,
+        remark=f"tqx Anthropic Messages。模型 {CLAUDE_SONNET46_MODEL_ID}。",
+        aliases=_LEGACY_TQX_CLAUDE_NAMES,
+    )
+    await _upsert_tqx_llm(
+        db,
+        name=GPT54_NAME,
+        provider="openai",
+        model_id=GPT54_MODEL_ID,
+        upstream_model=GPT54_MODEL_ID,
+        priority=70,
+        key=key,
+        remark=f"tqx OpenAI 兼容。显示 GPT-5.4，上游 {GPT54_MODEL_ID}。",
+        aliases=("g5.5", GPT54_MODEL_ID),
+    )
+    await _upsert_tqx_llm(
+        db,
+        name=DEEPSEEK_TQX_NAME,
+        provider="openai",
+        model_id=DEEPSEEK_TQX_MODEL_ID,
+        upstream_model=DEEPSEEK_TQX_UPSTREAM,
+        priority=85,
+        key=key,
+        remark=f"tqx 中转。显示 {DEEPSEEK_TQX_NAME}，上游 {DEEPSEEK_TQX_UPSTREAM}。与官方 DeepSeek 渠道互不覆盖。",
+    )
+
+
+async def _ensure_deepseek_llm_channel(db: AsyncSession) -> None:
+    """官方 DeepSeek Chat Completions。Key 只写在渠道表，不进源码。"""
+    remark = f"官方 DeepSeek。Base URL: {DEEPSEEK_BASE} ；上游模型 {DEEPSEEK_UPSTREAM}。"
+    ch = await _get_by_name(db, DEEPSEEK_V4_PRO_NAME)
+    if ch is None:
+        result = await db.execute(
+            select(Channel).where(Channel.kind == "llm", Channel.model_id == DEEPSEEK_V4_PRO_MODEL_ID).limit(1)
+        )
+        ch = result.scalar_one_or_none()
+    if ch is not None and _is_tqx_llm(ch):
+        ch = None
+    if ch is None:
+        db.add(
+            Channel(
+                name=DEEPSEEK_V4_PRO_NAME,
+                provider="openai",
+                kind="llm",
+                base_url=DEEPSEEK_BASE,
+                api_key="",
+                model_id=DEEPSEEK_V4_PRO_MODEL_ID,
+                upstream_model=DEEPSEEK_UPSTREAM,
+                cost_per_second=0.0,
+                priority=90,
+                enabled=False,
+                remark=remark,
+            )
+        )
+        return
+    ch.name = DEEPSEEK_V4_PRO_NAME
+    ch.provider = "openai"
+    ch.kind = "llm"
+    _adopt_llm_endpoint(ch, base_url=DEEPSEEK_BASE)
+    ch.model_id = DEEPSEEK_V4_PRO_MODEL_ID
+    ch.upstream_model = DEEPSEEK_UPSTREAM
+    ch.priority = 90
+    ch.remark = remark
+    if _looks_like_real_key(ch.api_key):
+        ch.enabled = True
 
 
 async def _ensure_tts_channel(db: AsyncSession) -> None:

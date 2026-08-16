@@ -178,6 +178,8 @@ textarea {
   place-items: center;
   font-size: 12px;
   font-weight: 700;
+  cursor: default;
+  user-select: none;
 }
 
 .balance-chip:hover:not(:disabled) {
@@ -2086,6 +2088,7 @@ button.block {
 
 .cv-dock-body {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -2382,10 +2385,12 @@ button.block {
 
 .cv-agent {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 0;
+  overflow-x: hidden;
 }
 
 .cv-agent-skill {
@@ -2462,12 +2467,19 @@ button.block {
 
 .cv-agent-thread {
   flex: 1;
+  min-width: 0;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
   padding: 0.7rem 0.75rem 0.35rem;
+}
+
+.cv-agent-thread > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .cv-agent-empty {
@@ -2491,11 +2503,14 @@ button.block {
   font-size: 0.8rem;
   line-height: 1.55;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
 .cv-agent-msg p {
   margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .cv-agent-msg.user {
@@ -2522,6 +2537,9 @@ button.block {
   margin: 0;
   font-size: 0.74rem;
   color: var(--danger);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .cv-agent-composer {
@@ -2654,6 +2672,8 @@ button.block {
   font-size: 0.72rem;
   color: var(--muted);
   padding: 0.1rem 0.15rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .cv-agent-tool.waiting {
   color: var(--accent);
@@ -2661,40 +2681,20 @@ button.block {
 .cv-agent-tool.error {
   color: #b42318;
 }
-.cv-agent-confirm {
-  align-self: stretch;
-  border: 1px solid rgba(212, 87, 138, 0.28);
-  background: var(--accent-soft);
-  border-radius: 10px;
-  padding: 0.55rem 0.65rem;
-  font-size: 0.78rem;
-}
-.cv-agent-confirm p {
-  margin: 0 0 0.35rem;
-}
-.cv-agent-confirm-wait {
-  color: var(--ink);
-}
 .cv-agent-confirm-meta {
   color: var(--muted);
   font-size: 0.72rem;
 }
-.cv-agent-confirm-actions {
-  display: flex;
-  gap: 0.4rem;
-  margin-top: 0.35rem;
+.cv-agent-plan {
+  align-self: stretch;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 12px;
+  padding: 0.6rem 0.7rem 0.45rem;
+  font-size: 0.78rem;
 }
-.cv-agent-confirm-yes {
-  border: 0;
-  background: var(--accent);
-  color: #fff;
-  border-radius: 999px;
-  padding: 0.28rem 0.7rem;
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-.cv-agent-confirm-yes:hover:not(:disabled) {
-  background: var(--accent-strong);
+.cv-agent-plan p {
+  margin: 0 0 0.35rem;
 }
 .cv-agent-plan ul {
   margin: 0.2rem 0 0.45rem;
@@ -2706,6 +2706,108 @@ button.block {
 .cv-agent-plan-stage em {
   font-style: normal;
   font-weight: 650;
+}
+.cv-agent-choice {
+  align-self: stretch;
+  border: 1px solid var(--line-strong);
+  background: #fff;
+  border-radius: 12px;
+  padding: 0.7rem 0.75rem 0.65rem;
+  box-shadow: 0 10px 28px rgba(60, 30, 45, 0.08);
+}
+.cv-agent-choice-prompt {
+  margin: 0 0 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 650;
+  color: var(--ink);
+}
+.cv-agent-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.cv-agent-choice-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--pearl);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  cursor: pointer;
+  color: var(--ink);
+}
+.cv-agent-choice-opt:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: #fff;
+}
+.cv-agent-choice-opt.is-on {
+  border-color: rgba(212, 87, 138, 0.55);
+  background: var(--accent-soft);
+}
+.cv-agent-choice-opt:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+.cv-agent-choice-radio {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 0.18rem;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+  background: #fff;
+  position: relative;
+}
+.cv-agent-choice-opt.is-on .cv-agent-choice-radio {
+  border-color: var(--accent);
+}
+.cv-agent-choice-opt.is-on .cv-agent-choice-radio::after {
+  content: "";
+  position: absolute;
+  inset: 2.5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.cv-agent-choice-copy {
+  min-width: 0;
+}
+.cv-agent-choice-opt strong {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.cv-agent-choice-opt em {
+  display: block;
+  margin-top: 0.12rem;
+  font-style: normal;
+  font-size: 0.7rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.cv-agent-choice-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.55rem;
+}
+.cv-agent-choice-go {
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 0.34rem 0.9rem;
+  font-size: 0.75rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.cv-agent-choice-go:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+.cv-agent-choice-go:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .cv-agent-stop {
   border: 1px solid var(--line-strong);
@@ -4137,13 +4239,6 @@ a.linkish:hover {
 
 .cv-modal label.check input {
   width: auto;
-}
-
-/* Agent confirm card: both actions share size and shape */
-.cv-agent-confirm-actions .ghost {
-  padding: 0.28rem 0.7rem;
-  font-size: 0.75rem;
-  border-radius: 999px;
 }
 
 /* Filled danger style for destructive confirm actions */

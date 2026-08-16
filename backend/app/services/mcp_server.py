@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import AssetVersion, Channel, User, Workflow, WorkflowRun, WorkflowRunStatus
 from app.services import asset_versions, graph_ops, scene_expand
 from app.services.graph_revisions import persist_graph
-from app.services.project_assets import refresh_cover, sync_from_graph
+from app.services.project_assets import delete_ephemeral_run, refresh_cover, sync_from_graph
 from app.services.run_preflight import cannot_run_reason
 from app.services.workflow_exec import execute_run
 
@@ -331,6 +331,14 @@ def tool_done_detail(name: str, result: str) -> str:
 
 def dumps(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False)
+
+
+def _public_run_error(raw: str) -> str:
+    text = (raw or "").strip()
+    low = text.lower()
+    if "could not refresh" in low or "refresh instance" in low:
+        return "出片结果读回失败，请再跑一次该节点。"
+    return text[:500]
 
 
 def _clip_text(val: Any, n: int = 400) -> str:
@@ -657,8 +665,20 @@ async def _run_node(ctx: McpContext, graph: dict, tool_name: str, node_id: str) 
     ctx.db.add(run)
     await ctx.db.commit()
     await ctx.db.refresh(run)
-    await execute_run(run.id)
-    await ctx.db.refresh(run)
+    run_id = run.id
+    await execute_run(run_id)
+    await ctx.db.expire(run)
+    run = await ctx.db.get(WorkflowRun, run_id)
+    if run is None:
+        return dumps(
+            {
+                "run_id": run_id,
+                "status": "failed",
+                "cost": 0,
+                "output": {},
+                "error": "出片记录在读回前丢失，请再跑一次该节点。",
+            }
+        )
     states = {}
     try:
         states = json.loads(run.node_states_json or "{}")
@@ -666,17 +686,20 @@ async def _run_node(ctx: McpContext, graph: dict, tool_name: str, node_id: str) 
         states = {}
     st = states.get(node_id) or {}
     status = str(run.status or st.get("status") or "")
-    err = str(run.error_message or st.get("error") or "")
+    err = _public_run_error(str(run.error_message or st.get("error") or ""))
     output = st.get("output") if isinstance(st.get("output"), dict) else {}
+    cost = run.cost
     await ctx.db.refresh(ctx.workflow)
     graph = graph_ops.parse_graph(ctx.workflow.graph_json)
     graph_ops.apply_run_output(graph, node_id, output, "succeeded" if status == "succeeded" else "failed", err)
     await _save(ctx, graph)
+    await delete_ephemeral_run(ctx.db, run)
+    await ctx.db.commit()
     return dumps(
         {
-            "run_id": run.id,
+            "run_id": run_id,
             "status": status,
-            "cost": run.cost,
+            "cost": cost,
             "output": output,
             "error": err or None,
         }

@@ -161,6 +161,48 @@ def make_async_client(timeout: float = 60.0, *, force_direct: bool = False) -> h
     return httpx.AsyncClient(timeout=timeout, trust_env=False)
 
 
+_TRANSIENT_HTTPX = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.WriteError,
+)
+_TRANSIENT_HINTS = (
+    "disconnected",
+    "connection reset",
+    "connection aborted",
+    "broken pipe",
+    "forcibly closed",
+    "winerror 10054",
+    "winerror 10053",
+    "server disconnected",
+    "network is unreachable",
+)
+
+
+def is_transient_httpx(exc: BaseException) -> bool:
+    if isinstance(exc, _TRANSIENT_HTTPX):
+        return True
+    msg = str(exc).lower()
+    return any(h in msg for h in _TRANSIENT_HINTS)
+
+
+def describe_upstream_disconnect(exc: BaseException, *, who: str) -> str:
+    """Human error that names which Key/channel dropped, not a vague 网关."""
+    raw = str(exc).strip() or exc.__class__.__name__
+    clip = raw if len(raw) <= 180 else raw[:179] + "…"
+    if is_transient_httpx(exc):
+        return (
+            f"{who}连接被断开（不是对话/出片 Key 填错时的典型 401）。"
+            f"多半是上游网关或线路闪断，请重试；连续失败再去超管对该渠道点探活。详情：{clip}"
+        )
+    return f"{who}请求失败：{clip}"
+
+
 def resolve_agnes_base_url(configured: str | None) -> str:
     """Pick Agnes endpoint by network mode.
 

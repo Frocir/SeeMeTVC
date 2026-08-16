@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user
+from app.llm_ids import DEFAULT_AGENT_MODEL_ID
 from app.models import Channel, User, Workflow
 from app.schemas import AgentChatIn, AgentResumeIn, AgentSessionPatchIn
 from app.services import agent_runtime as runtime
@@ -40,6 +41,17 @@ async def _pick_llm(db: AsyncSession, model_id: str) -> Channel:
     if ch is None:
         result = await db.execute(
             select(Channel)
+            .where(
+                Channel.enabled.is_(True),
+                Channel.kind == "llm",
+                Channel.model_id == DEFAULT_AGENT_MODEL_ID,
+            )
+            .limit(1)
+        )
+        ch = result.scalar_one_or_none()
+    if ch is None:
+        result = await db.execute(
+            select(Channel)
             .where(Channel.enabled.is_(True), Channel.kind == "llm")
             .order_by(Channel.priority.desc(), Channel.id.asc())
             .limit(1)
@@ -59,6 +71,19 @@ async def _owned_wf(db: AsyncSession, workflow_id: int, user: User) -> Workflow:
 
 def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _iter_sse_queue(q: asyncio.Queue[tuple[str, dict] | None]):
+    """Yield SSE chunks; ping every 12s so long video gen does not look like a dead gateway."""
+    while True:
+        try:
+            item = await asyncio.wait_for(q.get(), timeout=12.0)
+        except (TimeoutError, asyncio.TimeoutError):
+            yield ": keepalive\n\n"
+            continue
+        if item is None:
+            break
+        yield _sse(item[0], item[1])
 
 
 @router.get("/skills")
@@ -208,11 +233,8 @@ async def agent_chat(
 
         task = asyncio.create_task(run())
         try:
-            while True:
-                item = await q.get()
-                if item is None:
-                    break
-                yield _sse(item[0], item[1])
+            async for chunk in _iter_sse_queue(q):
+                yield chunk
         finally:
             await task
 
@@ -274,11 +296,8 @@ async def agent_resume(
 
         task = asyncio.create_task(run())
         try:
-            while True:
-                item = await q.get()
-                if item is None:
-                    break
-                yield _sse(item[0], item[1])
+            async for chunk in _iter_sse_queue(q):
+                yield chunk
         finally:
             await task
 

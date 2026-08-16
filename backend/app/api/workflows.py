@@ -39,6 +39,18 @@ from app.services.workflow_exec import execute_run
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 
+async def _execute_then_cleanup(run_id: int) -> None:
+    await execute_run(run_id)
+    async with SessionLocal() as db:
+        run = await db.get(WorkflowRun, run_id)
+        if run is None:
+            return
+        from app.services.project_assets import delete_ephemeral_run
+
+        await delete_ephemeral_run(db, run)
+        await db.commit()
+
+
 _TERMINAL = {
     WorkflowRunStatus.SUCCEEDED.value,
     WorkflowRunStatus.FAILED.value,
@@ -208,7 +220,7 @@ async def start_run(
     await db.commit()
     await db.refresh(run)
 
-    background.add_task(execute_run, run.id)
+    background.add_task(_execute_then_cleanup, run.id)
     return _run_out(run)
 
 

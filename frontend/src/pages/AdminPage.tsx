@@ -3,6 +3,19 @@ import { Navigate } from "react-router-dom";
 import { api, type AdminUser, type BalanceEntry, type Channel, type ChannelProbe } from "../api";
 import { useAuth } from "../auth";
 import LedgerModal from "../components/LedgerModal";
+import {
+  CLAUDE_SONNET46_MODEL_ID,
+  DEEPSEEK_BASE,
+  DEEPSEEK_HOST,
+  DEEPSEEK_TQX_MODEL_ID,
+  DEEPSEEK_TQX_UPSTREAM,
+  DEEPSEEK_UPSTREAM,
+  DEFAULT_AGENT_MODEL_ID,
+  GPT54_MODEL_ID,
+  TQX_LLM_BASE,
+  isOfficialDeepseekUrl,
+  isTqxLlmUrl,
+} from "../llmIds";
 
 type ChannelForm = {
   name: string;
@@ -113,6 +126,58 @@ const PROVIDER_PRESETS: Record<
     enabled: false,
     remark: "自填 base_url 与模型 ID。",
   },
+  "tqx-claude": {
+    label: "Claude Sonnet 4.6",
+    hint: "tqx Anthropic Messages。kind=llm",
+    provider: "anthropic",
+    kind: "llm",
+    base_url: TQX_LLM_BASE,
+    model_id: CLAUDE_SONNET46_MODEL_ID,
+    upstream_model: CLAUDE_SONNET46_MODEL_ID,
+    cost_per_second: 0,
+    priority: 80,
+    enabled: true,
+    remark: `tqx Anthropic Messages。模型 ${CLAUDE_SONNET46_MODEL_ID}。`,
+  },
+  "tqx-g54": {
+    label: "GPT-5.4",
+    hint: `tqx OpenAI 兼容。显示 GPT-5.4，上游 ${GPT54_MODEL_ID}。kind=llm`,
+    provider: "openai",
+    kind: "llm",
+    base_url: TQX_LLM_BASE,
+    model_id: GPT54_MODEL_ID,
+    upstream_model: GPT54_MODEL_ID,
+    cost_per_second: 0,
+    priority: 70,
+    enabled: true,
+    remark: `tqx OpenAI 兼容。显示 GPT-5.4，上游 ${GPT54_MODEL_ID}。`,
+  },
+  "deepseek-v4": {
+    label: DEFAULT_AGENT_MODEL_ID,
+    hint: "官方 DeepSeek Chat Completions。kind=llm",
+    provider: "openai",
+    kind: "llm",
+    base_url: DEEPSEEK_BASE,
+    model_id: DEFAULT_AGENT_MODEL_ID,
+    upstream_model: DEEPSEEK_UPSTREAM,
+    cost_per_second: 0,
+    priority: 90,
+    enabled: true,
+    remark: `官方 DeepSeek。Base URL: ${DEEPSEEK_BASE} ；上游模型 ${DEEPSEEK_UPSTREAM}。`,
+  },
+  "tqx-dsv4": {
+    label: "DeepSeek-V4-Pro（tqx）",
+    hint: "tqx 中转。与官方 DeepSeek 分开，Key 不能混用。kind=llm",
+    provider: "openai",
+    kind: "llm",
+    base_url: TQX_LLM_BASE,
+    model_id: DEEPSEEK_TQX_MODEL_ID,
+    upstream_model: DEEPSEEK_TQX_UPSTREAM,
+    cost_per_second: 0,
+    priority: 85,
+    enabled: true,
+    remark: `tqx 中转 DeepSeek。上游 ${DEEPSEEK_TQX_UPSTREAM}。不要填官方 ${DEEPSEEK_HOST} 的 Key。`,
+  },
   "edge-tts": {
     label: "Edge TTS（aisrv）",
     hint: "本机 openai-edge-tts 容器。默认钥匙来自 AISRV_API_KEY。kind=tts",
@@ -191,6 +256,14 @@ function guessPreset(ch: Pick<Channel, "provider" | "kind" | "model_id" | "base_
   }
   if (kind === "asr") return "openai-asr";
   if (kind === "tts") return "edge-tts";
+  if (isTqxLlmUrl(ch.base_url || "")) {
+    if (ch.model_id === GPT54_MODEL_ID || ch.model_id === "g5.5") return "tqx-g54";
+    if ((ch.model_id || "").toLowerCase().includes("deepseek")) return "tqx-dsv4";
+    return "tqx-claude";
+  }
+  if (isOfficialDeepseekUrl(ch.base_url || "") || ch.model_id === DEFAULT_AGENT_MODEL_ID) {
+    return "deepseek-v4";
+  }
   if (ch.provider === "anthropic") return "anthropic";
   if (ch.provider === "openai" && kind === "llm") {
     return (ch.base_url || "").includes("openai.com") ? "openai-llm" : "openai-custom";
@@ -263,26 +336,7 @@ export default function AdminPage() {
       setForm({ ...form, provider: key });
       return;
     }
-    const defaultName =
-      key === "agnes"
-        ? "Agnes AI Pavo (free)"
-        : key === "ark-lite"
-          ? "Seedance Lite（火山方舟）"
-          : key === "ark-2.5"
-            ? "Seedance 2.5（火山方舟）"
-            : key === "openai-llm"
-              ? "OpenAI 兼容 · 对话"
-              : key === "anthropic"
-                ? "Anthropic · 对话"
-                : key === "openai-custom"
-                  ? "自定义 token（OpenAI 兼容）"
-                  : key === "edge-tts"
-                    ? "Edge TTS（aisrv）"
-                    : key === "openai-image"
-                      ? "OpenAI 兼容 · 图像"
-                      : key === "gemini-image"
-                        ? "向量引擎 · Gemini 文生图"
-                        : form.name;
+    const defaultName = preset.label || form.name;
     setForm((prev) => ({
       ...prev,
       provider: preset.provider || key,

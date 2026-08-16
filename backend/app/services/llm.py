@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
@@ -9,8 +10,9 @@ from typing import Any
 
 import httpx
 
+from app.llm_ids import is_official_deepseek_url
 from app.models import Channel
-from app.services.net import make_async_client
+from app.services.net import describe_upstream_disconnect, is_transient_httpx, make_async_client
 
 LLM_HTTP_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
@@ -266,25 +268,29 @@ async def chat_turn(
 
 
 def _openai_payload_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """OpenAI/DeepSeek: never send unpaired tool_calls. History is text; current loop keeps tools."""
+    return _pack_openai_agent_messages(system, messages)
+
+
+def _is_tool_pairing_error(body: str) -> bool:
+    low = (body or "").lower()
+    return "tool_call" in low and (
+        "insufficient" in low or "must be followed" in low or "tool_call_id" in low
+    )
+
+
+def _pack_openai_text_fallback(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Last user text only. Canvas lives in system — enough to call tools again."""
+    last = "请继续"
+    for m in messages:
+        if str(m.get("role") or "") == "user":
+            text = str(m.get("content") or "").strip()
+            if text:
+                last = text
     out: list[dict[str, Any]] = []
     if system.strip():
         out.append({"role": "system", "content": system.strip()})
-    for m in messages:
-        role = str(m.get("role") or "")
-        if role not in {"user", "assistant", "tool"}:
-            continue
-        item: dict[str, Any] = {"role": role}
-        if role == "tool":
-            item["content"] = str(m.get("content") or "")
-            tcid = str(m.get("tool_call_id") or "")
-            if tcid:
-                item["tool_call_id"] = tcid
-        elif role == "assistant" and m.get("tool_calls"):
-            item["content"] = m.get("content")
-            item["tool_calls"] = m["tool_calls"]
-        else:
-            item["content"] = str(m.get("content") or "")
-        out.append(item)
+    out.append({"role": "user", "content": last})
     return out
 
 
@@ -298,56 +304,85 @@ async def _openai_turn(
     tools: list[dict[str, Any]],
 ) -> AsyncIterator[dict[str, Any]]:
     url = f"{_openai_root(channel.base_url)}/chat/completions"
+    packed = _pack_openai_agent_messages(system, messages)
+    pairing_retried = False
     payload: dict[str, Any] = {
         "model": model,
-        "messages": _openai_payload_messages(system, messages),
+        "messages": packed,
         "temperature": 0.7,
         "stream": True,
     }
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+    if is_official_deepseek_url(channel.base_url):
+        # V4 Pro 默认 thinking，Agent 需要直接出话 / 调工具。
+        payload["thinking"] = {"type": "disabled"}
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     acc_text: list[str] = []
     acc_tools: dict[int, dict[str, str]] = {}
-    try:
-        async with make_async_client(timeout=AGENT_LLM_TIMEOUT) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as resp:
-                if resp.status_code >= 400:
-                    body = (await resp.aread()).decode("utf-8", errors="replace")[:300]
-                    raise LlmError(f"LLM 上游 HTTP {resp.status_code}：{body}")
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    choice = (chunk.get("choices") or [{}])[0]
-                    delta = choice.get("delta") or {}
-                    piece = delta.get("content")
-                    if isinstance(piece, str) and piece:
-                        acc_text.append(piece)
-                        yield {"kind": "token", "text": piece}
-                    for tc in delta.get("tool_calls") or []:
-                        if not isinstance(tc, dict):
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        acc_text = []
+        acc_tools = {}
+        yielded = False
+        try:
+            async with make_async_client(timeout=AGENT_LLM_TIMEOUT) as client:
+                async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                    if resp.status_code >= 400:
+                        body = (await resp.aread()).decode("utf-8", errors="replace")[:300]
+                        if not pairing_retried and _is_tool_pairing_error(body):
+                            pairing_retried = True
+                            payload["messages"] = _pack_openai_text_fallback(system, messages)
                             continue
-                        idx = int(tc.get("index") or 0)
-                        slot = acc_tools.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                        if tc.get("id"):
-                            slot["id"] = str(tc["id"])
-                        fn = tc.get("function") or {}
-                        if fn.get("name"):
-                            slot["name"] = str(fn["name"])
-                        if fn.get("arguments"):
-                            slot["arguments"] += str(fn["arguments"])
-    except LlmError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise LlmError(f"LLM 请求失败：{exc}") from exc
+                        raise LlmError(f"对话模型上游 HTTP {resp.status_code}：{body}")
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choice = (chunk.get("choices") or [{}])[0]
+                        delta = choice.get("delta") or {}
+                        piece = delta.get("content")
+                        if isinstance(piece, str) and piece:
+                            acc_text.append(piece)
+                            yielded = True
+                            yield {"kind": "token", "text": piece}
+                        for tc in delta.get("tool_calls") or []:
+                            if not isinstance(tc, dict):
+                                continue
+                            yielded = True
+                            idx = int(tc.get("index") or 0)
+                            slot = acc_tools.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                            if tc.get("id"):
+                                slot["id"] = str(tc["id"])
+                            fn = tc.get("function") or {}
+                            if fn.get("name"):
+                                slot["name"] = str(fn["name"])
+                            if fn.get("arguments"):
+                                slot["arguments"] += str(fn["arguments"])
+            break
+        except LlmError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if yielded or not is_transient_httpx(exc) or attempt >= 2:
+                raise LlmError(
+                    describe_upstream_disconnect(exc, who="对话模型（Agent 用的 LLM，不是生视频 Key）")
+                ) from exc
+            await asyncio.sleep(0.8)
+    else:
+        raise LlmError(
+            describe_upstream_disconnect(
+                last_exc or RuntimeError("unknown"),
+                who="对话模型（Agent 用的 LLM，不是生视频 Key）",
+            )
+        )
     if acc_tools:
         calls = []
         for idx in sorted(acc_tools):
@@ -369,6 +404,228 @@ async def _openai_turn(
         yield {"kind": "tool_calls", "calls": calls}
         return
     yield {"kind": "message", "text": "".join(acc_text).strip()}
+
+
+_TOOL_STUB = json.dumps(
+    {"error": "这次工具没有回传结果（上次出片或确认中断了）。请再调用一次。"},
+    ensure_ascii=False,
+)
+
+
+def _tool_call_id(tc: dict[str, Any], fallback: str = "") -> str:
+    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+    return str(
+        tc.get("id")
+        or tc.get("tool_use_id")
+        or tc.get("toolUseId")
+        or fn.get("name")
+        or tc.get("name")
+        or fallback
+        or ""
+    ).strip()
+
+
+def _tool_name(tc: dict[str, Any]) -> str:
+    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+    return str(fn.get("name") or tc.get("name") or "").strip()
+
+
+def _tool_input(tc: dict[str, Any]) -> dict[str, Any]:
+    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+    args = fn.get("arguments") if fn else tc.get("arguments") or tc.get("input")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = {}
+    return args if isinstance(args, dict) else {}
+
+
+def align_messages_for_tools(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put every tool_result immediately after its assistant tool_use. Keep user text after that."""
+    out: list[dict[str, Any]] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        m = messages[i]
+        role = str(m.get("role") or "")
+        if role == "tool":
+            i += 1
+            continue
+        raw_calls = m.get("tool_calls") if role == "assistant" else None
+        calls = [dict(tc) for tc in (raw_calls or []) if isinstance(tc, dict)]
+        if role == "assistant" and calls:
+            ids: list[str] = []
+            for k, tc in enumerate(calls):
+                tid = _tool_call_id(tc, fallback=f"toolu_local_{i}_{k}")
+                tc["id"] = tid
+                ids.append(tid)
+            got: dict[str, dict[str, Any]] = {}
+            intervening: list[dict[str, Any]] = []
+            j = i + 1
+            while j < n:
+                nxt = messages[j]
+                nr = str(nxt.get("role") or "")
+                if nr == "assistant" and nxt.get("tool_calls"):
+                    break
+                if nr == "tool":
+                    tid = str(nxt.get("tool_call_id") or "")
+                    if tid:
+                        got[tid] = nxt
+                elif nr in {"user", "assistant"} and str(nxt.get("content") or "").strip():
+                    intervening.append(nxt)
+                j += 1
+            out.append({"role": "assistant", "content": None, "tool_calls": calls})
+            for tid in ids:
+                if tid in got:
+                    row = dict(got[tid])
+                    row["tool_call_id"] = tid
+                    out.append(row)
+                else:
+                    out.append({"role": "tool", "tool_call_id": tid, "content": _TOOL_STUB})
+            out.extend(intervening)
+            i = j
+            continue
+        if role in {"user", "assistant"} and str(m.get("content") or "").strip():
+            out.append(m)
+        i += 1
+    return out
+
+
+def _normalize_openai_tool_calls(raw: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for i, tc in enumerate(raw or []):
+        if not isinstance(tc, dict):
+            continue
+        tid = _tool_call_id(tc, fallback=f"call_{i}")
+        if not tid:
+            continue
+        out.append(
+            {
+                "id": tid,
+                "type": "function",
+                "function": {
+                    "name": _tool_name(tc) or "unknown",
+                    "arguments": json.dumps(_tool_input(tc), ensure_ascii=False),
+                },
+            }
+        )
+    return out
+
+
+def _in_progress_tool_suffix(aligned: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep trailing assistant tool_calls + results (the live tool round). Else drop tools."""
+    i = len(aligned) - 1
+    tools: list[dict[str, Any]] = []
+    while i >= 0 and str(aligned[i].get("role") or "") == "tool":
+        tools.append(aligned[i])
+        i -= 1
+    tools.reverse()
+    if i < 0:
+        return []
+    head = aligned[i]
+    if str(head.get("role") or "") != "assistant" or not head.get("tool_calls"):
+        return []
+    calls = _normalize_openai_tool_calls(list(head.get("tool_calls") or []))
+    if not calls:
+        return []
+    by_id = {str(t.get("tool_call_id") or ""): t for t in tools if t.get("tool_call_id")}
+    packed = [
+        {
+            "role": "tool",
+            "tool_call_id": c["id"],
+            "content": str((by_id.get(c["id"]) or {}).get("content") or _TOOL_STUB),
+        }
+        for c in calls
+    ]
+    return [{"role": "assistant", "content": "", "tool_calls": calls}, *packed]
+
+
+def _merge_text_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        role = str(m.get("role") or "")
+        if role == "tool" or (role == "assistant" and m.get("tool_calls")):
+            continue
+        text = str(m.get("content") or "").strip()
+        if role not in {"user", "assistant"} or not text:
+            continue
+        if out and out[-1]["role"] == role:
+            out[-1]["content"] = f"{out[-1]['content']}\n{text}"
+        else:
+            out.append({"role": role, "content": text})
+    return out
+
+
+def _openai_pairing_ok(packed: list[dict[str, Any]]) -> bool:
+    for i, m in enumerate(packed):
+        if str(m.get("role") or "") != "assistant" or not m.get("tool_calls"):
+            continue
+        calls = [tc for tc in (m.get("tool_calls") or []) if isinstance(tc, dict)]
+        ids = [str(tc.get("id") or "") for tc in calls]
+        if not ids or any(not tid for tid in ids):
+            return False
+        for j, tid in enumerate(ids):
+            nxt = packed[i + 1 + j] if i + 1 + j < len(packed) else None
+            if not nxt or str(nxt.get("role") or "") != "tool" or str(nxt.get("tool_call_id") or "") != tid:
+                return False
+    return True
+
+
+def _last_spoken_role(messages: list[dict[str, Any]]) -> str:
+    for m in reversed(messages):
+        role = str(m.get("role") or "")
+        if role == "user" and str(m.get("content") or "").strip():
+            return "user"
+        if role == "tool":
+            return "tool"
+        if role == "assistant" and (m.get("tool_calls") or str(m.get("content") or "").strip()):
+            return "assistant"
+    return ""
+
+
+def _pack_openai_agent_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    aligned = align_messages_for_tools(messages)
+    # A new user line means the previous tool round is over. Never replay those tool_calls.
+    suffix = [] if _last_spoken_role(messages) == "user" else _in_progress_tool_suffix(aligned)
+    prefix = aligned[: len(aligned) - len(suffix)] if suffix else aligned
+    text = _merge_text_turns(prefix)
+    while text and text[0]["role"] != "user":
+        text = text[1:]
+    if not text:
+        text = [{"role": "user", "content": "请继续"}]
+    out: list[dict[str, Any]] = []
+    if system.strip():
+        out.append({"role": "system", "content": system.strip()})
+    out.extend(text)
+    out.extend(suffix)
+    if not _openai_pairing_ok(out):
+        return _pack_openai_text_fallback(system, messages)
+    return out
+
+
+def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bedrock 网关会把历史 tool_use 配对搞崩。Agent 只发最近的纯文本，画布状态在 system 里。"""
+    texts: list[str] = []
+    for m in messages:
+        if str(m.get("role") or "") != "user":
+            continue
+        text = str(m.get("content") or "").strip()
+        if text:
+            texts.append(text)
+    last = texts[-1] if texts else "请继续"
+    return [{"role": "user", "content": last}]
+
+
+def _parse_anthropic_tool_use(block: dict[str, Any]) -> dict[str, Any] | None:
+    inner = block.get("toolUse") if isinstance(block.get("toolUse"), dict) else block
+    tid = str(inner.get("id") or inner.get("tool_use_id") or inner.get("toolUseId") or "").strip()
+    name = str(inner.get("name") or "").strip()
+    raw_in = inner.get("input") if inner.get("input") is not None else inner.get("arguments")
+    args = raw_in if isinstance(raw_in, dict) else {}
+    if not tid and not name:
+        return None
+    return {"id": tid or f"toolu_{name}", "name": name or "unknown", "arguments": args}
 
 
 def _anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -397,47 +654,8 @@ async def _anthropic_turn(
     tools: list[dict[str, Any]],
 ) -> AsyncIterator[dict[str, Any]]:
     url = f"{_anthropic_root(channel.base_url)}/v1/messages"
-    anth_msgs: list[dict[str, Any]] = []
-    for m in messages:
-        role = str(m.get("role") or "")
-        if role == "tool":
-            anth_msgs.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": str(m.get("tool_call_id") or ""),
-                            "content": str(m.get("content") or ""),
-                        }
-                    ],
-                }
-            )
-        elif role in {"user", "assistant"}:
-            if m.get("tool_calls"):
-                blocks: list[dict[str, Any]] = []
-                if m.get("content"):
-                    blocks.append({"type": "text", "text": str(m["content"])})
-                for tc in m["tool_calls"]:
-                    fn = tc.get("function") or {}
-                    args = fn.get("arguments")
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except json.JSONDecodeError:
-                            args = {}
-                    blocks.append(
-                        {
-                            "type": "tool_use",
-                            "id": tc.get("id"),
-                            "name": fn.get("name") or tc.get("name"),
-                            "input": args if isinstance(args, dict) else {},
-                        }
-                    )
-                anth_msgs.append({"role": "assistant", "content": blocks})
-            else:
-                anth_msgs.append({"role": role, "content": str(m.get("content") or "")})
-    payload: dict[str, Any] = {"model": model, "max_tokens": 4096, "messages": anth_msgs or [{"role": "user", "content": "你好"}]}
+    anth_msgs = _to_anthropic_messages(messages)
+    payload: dict[str, Any] = {"model": model, "max_tokens": 4096, "messages": anth_msgs}
     if system.strip():
         payload["system"] = system.strip()
     if tools:
@@ -447,7 +665,9 @@ async def _anthropic_turn(
         async with make_async_client(timeout=AGENT_LLM_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload)
     except Exception as exc:  # noqa: BLE001
-        raise LlmError(f"LLM 请求失败：{exc}") from exc
+        raise LlmError(
+            describe_upstream_disconnect(exc, who="对话模型（Agent 用的 LLM，不是生视频 Key）")
+        ) from exc
     if resp.status_code >= 400:
         raise LlmError(f"LLM 上游 HTTP {resp.status_code}：{(resp.text or '')[:300]}")
     data = resp.json()
@@ -458,14 +678,10 @@ async def _anthropic_turn(
             continue
         if b.get("type") == "text":
             texts.append(str(b.get("text") or ""))
-        elif b.get("type") == "tool_use":
-            calls.append(
-                {
-                    "id": str(b.get("id") or ""),
-                    "name": str(b.get("name") or ""),
-                    "arguments": b.get("input") if isinstance(b.get("input"), dict) else {},
-                }
-            )
+        elif b.get("type") in {"tool_use", "toolUse"} or b.get("toolUse"):
+            parsed = _parse_anthropic_tool_use(b)
+            if parsed:
+                calls.append(parsed)
     if calls:
         yield {"kind": "tool_calls", "calls": calls}
         return
