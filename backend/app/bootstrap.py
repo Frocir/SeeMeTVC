@@ -23,6 +23,7 @@ _log = logging.getLogger("seemetvc.bootstrap")
 
 AGNES_CHANNEL_NAME = "Agnes AI Pavo (free)"
 LITE_CHANNEL_NAME = "Seedance Lite（火山方舟）"
+SEEDANCE_FAST_CHANNEL_NAME = "Seedance Fast（火山方舟）"
 SEEDANCE25_CHANNEL_NAME = "Seedance 2.5（火山方舟）"
 OPENAI_LLM_CHANNEL_NAME = "OpenAI 兼容 · 对话"
 ANTHROPIC_LLM_CHANNEL_NAME = "Anthropic · 对话"
@@ -41,6 +42,7 @@ GEMINI_IMAGE_CHANNEL_NAME = "向量引擎 · Gemini 文生图"
 OPENAI_ASR_CHANNEL_NAME = "OpenAI 兼容 · 语音识别"
 
 LITE_PRIORITY = 80
+SEEDANCE_FAST_PRIORITY = 90
 SEEDANCE25_PRIORITY = 90
 AGNES_PRIORITY = 10
 
@@ -55,10 +57,13 @@ _MOCK_MODEL_IDS = (
 ARK_BASE = "https://ark.cn-beijing.volces.com"
 # 默认可被超管改成控制台里的「推理接入点 ID」(ep-xxx)
 LITE_UPSTREAM = "doubao-seedance-1-0-lite-t2v-250428"
+SEEDANCE_FAST_UPSTREAM = "doubao-seedance-2-0-fast-260128"
 SEEDANCE25_UPSTREAM = "doubao-seedance-2-0-260128"
 
 _LEGACY_LITE_NAMES = ("Seedance Lite (fal)", "Seedance Lite (fal)")
+_LEGACY_FAST_NAMES = ("Seedance Fast (fal)", "Seedance Fast (disabled)")
 _LEGACY_25_NAMES = ("Seedance 2.5 (fal)", "Seedance 2.5 (disabled)")
+_ARK_SEEDANCE_MODEL_IDS = ("seedance-lite", "seedance-fast", "seedance-2.5")
 
 
 def _looks_like_real_key(key: str) -> bool:
@@ -137,7 +142,7 @@ async def _retire_mock_channels(db: AsyncSession) -> None:
 
 
 async def _ensure_seedance_channels(db: AsyncSession) -> None:
-    """Seedance Lite / 2.5 via 火山方舟 Ark. Keys only via 超管 UI."""
+    """Seedance Lite / Fast / 2.5 via 火山方舟 Ark. Keys only via 超管 UI."""
 
     await _ensure_ark_model_channel(
         db,
@@ -156,6 +161,20 @@ async def _ensure_seedance_channels(db: AsyncSession) -> None:
     )
     await _ensure_ark_model_channel(
         db,
+        name=SEEDANCE_FAST_CHANNEL_NAME,
+        legacy_names=_LEGACY_FAST_NAMES,
+        model_id="seedance-fast",
+        upstream=SEEDANCE_FAST_UPSTREAM,
+        priority=SEEDANCE_FAST_PRIORITY,
+        cost=4.0,
+        remark=(
+            "火山方舟 Seedance 2.0 Fast。"
+            "默认同步音频；时长约 4–15 秒；720p。"
+            "upstream_model 可改为你控制台的接入点 ID。超管「改 Key」后启用。"
+        ),
+    )
+    await _ensure_ark_model_channel(
+        db,
         name=SEEDANCE25_CHANNEL_NAME,
         legacy_names=_LEGACY_25_NAMES,
         model_id="seedance-2.5",
@@ -168,6 +187,22 @@ async def _ensure_seedance_channels(db: AsyncSession) -> None:
             "upstream_model 可改为你控制台的接入点 ID。超管「改 Key」后启用。"
         ),
     )
+    await _share_ark_seedance_keys(db)
+
+
+async def _share_ark_seedance_keys(db: AsyncSession) -> None:
+    """Lite / Fast / 2.5 共用同一把方舟 Key；有 Key 的渠道会带上还没填的兄弟渠道。"""
+    await db.flush()
+    result = await db.execute(select(Channel).where(Channel.model_id.in_(_ARK_SEEDANCE_MODEL_IDS)))
+    chs = list(result.scalars().all())
+    donor = next((c for c in chs if _looks_like_real_key(c.api_key)), None)
+    if donor is None:
+        return
+    for ch in chs:
+        if not _looks_like_real_key(ch.api_key):
+            ch.api_key = donor.api_key
+            if donor.enabled:
+                ch.enabled = True
 
 
 async def _ensure_ark_model_channel(
@@ -652,7 +687,7 @@ async def _heal_channels(db: AsyncSession) -> None:
     result = await db.execute(
         select(Channel).where(
             Channel.provider == "fal",
-            Channel.model_id.in_(("seedance-lite", "seedance-2.5")),
+            Channel.model_id.in_(_ARK_SEEDANCE_MODEL_IDS),
         )
     )
     for ch in result.scalars().all():
@@ -662,6 +697,10 @@ async def _heal_channels(db: AsyncSession) -> None:
             ch.name = LITE_CHANNEL_NAME
             if "fal" in (ch.upstream_model or "") or "bytedance/" in (ch.upstream_model or ""):
                 ch.upstream_model = LITE_UPSTREAM
+        elif ch.model_id == "seedance-fast":
+            ch.name = SEEDANCE_FAST_CHANNEL_NAME
+            if "fal" in (ch.upstream_model or "") or "bytedance/" in (ch.upstream_model or ""):
+                ch.upstream_model = SEEDANCE_FAST_UPSTREAM
         else:
             ch.name = SEEDANCE25_CHANNEL_NAME
             if "fal" in (ch.upstream_model or "") or "bytedance/" in (ch.upstream_model or ""):

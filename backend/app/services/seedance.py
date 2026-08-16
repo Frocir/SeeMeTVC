@@ -34,7 +34,7 @@ ARK_PROVIDERS = {"ark", "volc", "volcengine", "doubao"}
 LEGACY_FAL_PROVIDERS = {"fal"}
 
 DEFAULT_ARK_BASE = "https://ark.cn-beijing.volces.com"
-DEFAULT_VIDEO_MODEL_ID = "seedance-2.5"
+DEFAULT_VIDEO_MODEL_ID = "seedance-fast"
 ARK_HTTP_TIMEOUT = httpx.Timeout(120.0, connect=12.0, write=120.0, read=90.0)
 ARK_NET_RETRIES = 3
 
@@ -111,9 +111,13 @@ def _upstream_blob(channel: Channel) -> str:
 
 
 def fal_family(channel: Channel) -> str:
-    """Return 'seedance-2.5' | 'seedance-lite' | 'other' (name kept for callers)."""
+    """Return seedance-fast | seedance-2.5 | seedance-lite | other."""
     mid = (channel.model_id or "").lower().strip()
     blob = f"{_upstream_blob(channel)} {mid}".lower()
+    if mid == "seedance-fast" or "seedance-2-0-fast" in blob or "seedance-2.0-fast" in blob or (
+        "seedance" in blob and "fast" in blob
+    ):
+        return "seedance-fast"
     if mid == "seedance-2.5" or "seedance-2.5" in blob or "seedance-2-0" in blob or "seedance-2.0" in blob:
         return "seedance-2.5"
     if mid == "seedance-lite" or ("seedance" in blob and "lite" in blob):
@@ -129,6 +133,8 @@ def clamp_duration_seconds(channel: Channel, duration_seconds: int) -> int:
     family = fal_family(channel)
     if family == "seedance-2.5":
         return max(4, min(dur, 30))
+    if family == "seedance-fast":
+        return max(4, min(dur, 15))
     if family == "seedance-lite":
         return max(2, min(dur, 12))
     return max(2, min(dur, 30))
@@ -139,7 +145,10 @@ def poll_budget(channel: Channel) -> tuple[float, int]:
     if _is_agnes(channel):
         return 12.0, 60
     if fal_family(channel) == "seedance-2.5":
-        return 5.0, 180
+        # 高峰常见 5–12 分钟；15 分钟偏紧，放到 20 分钟。
+        return 5.0, 240
+    if fal_family(channel) == "seedance-fast":
+        return 5.0, 120
     if _is_ark(channel):
         return 5.0, 96
     return 2.0, 30
@@ -156,6 +165,8 @@ def _ark_model(channel: Channel) -> str:
     m = (_upstream_blob(channel) or "").strip()
     if not m or "fal-ai/" in m or m.startswith("bytedance/"):
         family = fal_family(channel)
+        if family == "seedance-fast":
+            return "doubao-seedance-2-0-fast-260128"
         if family == "seedance-2.5":
             return "doubao-seedance-2-0-260128"
         return "doubao-seedance-1-0-lite-t2v-250428"
@@ -306,7 +317,9 @@ def _build_ark_payload(
     dur = clamp_duration_seconds(channel, duration_seconds)
     family = fal_family(channel)
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-    first_last = family == "seedance-2.5" and bool(last_image_url or style_image_url or character_image_url or product_image_url)
+    first_last = family in {"seedance-2.5", "seedance-fast"} and bool(
+        last_image_url or style_image_url or character_image_url or product_image_url
+    )
     if first_last:
         _append_ark_image(content, image_url, "first_frame" if image_url else None)
         _append_ark_image(content, last_image_url, "last_frame")
@@ -325,10 +338,7 @@ def _build_ark_payload(
     }
     # 有参考图时用 adaptive 跟图；纯文生默认 16:9
     payload["ratio"] = "adaptive" if image_url or last_image_url else "16:9"
-    if family == "seedance-2.5":
-        payload["generate_audio"] = True
-    else:
-        payload["generate_audio"] = False
+    payload["generate_audio"] = family in {"seedance-2.5", "seedance-fast"}
     return payload
 
 

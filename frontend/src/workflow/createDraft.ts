@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { api, type Workflow } from "../api";
+import { DEFAULT_VIDEO_MODEL_ID } from "../videoIds";
 import { buildTemplateGraph } from "../workflow/draftMeta";
 import { WF_TEMPLATES, type WfTemplateId } from "../workflow/templates";
 
@@ -13,7 +14,7 @@ export async function createDraft(opts: {
   const graph =
     opts.template === "blank"
       ? { nodes: [], edges: [] }
-      : buildTemplateGraph(opts.template, opts.modelId || "seedance-2.5", {
+      : buildTemplateGraph(opts.template, opts.modelId || DEFAULT_VIDEO_MODEL_ID, {
           brand: opts.brand,
           prompt: opts.prompt,
         });

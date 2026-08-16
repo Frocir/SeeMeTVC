@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import BeautyPromoGallery from "../components/BeautyPromoGallery";
 import { api, type ModelOption } from "../api";
+import { DEFAULT_VIDEO_MODEL_ID } from "../videoIds";
 import type { BeautyPromo } from "../beautyAssets";
 import { createDraft } from "../workflow/createDraft";
 import { WF_TEMPLATES, type WfTemplateId } from "../workflow/templates";
@@ -15,7 +16,7 @@ export default function TemplatesPage() {
   useEffect(() => {
     void api<ModelOption[]>("/api/models")
       .then((ms) =>
-        setModelId(ms.find((m) => m.model_id === "seedance-2.5")?.model_id || ms[0]?.model_id || ""),
+        setModelId(ms.find((m) => m.model_id === DEFAULT_VIDEO_MODEL_ID)?.model_id || ms[0]?.model_id || ""),
       )
       .catch((e) => setError(e instanceof Error ? e.message : "加载失败"));
   }, []);

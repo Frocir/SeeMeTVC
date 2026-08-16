@@ -45,6 +45,7 @@ from app.services.project_assets import (
     upsert_asset,
 )
 from app.services.run_preflight import cannot_run_reason
+from app.services.run_watchdog import abandon_active_runs, expire_stale_runs, sanitize_saved_graph
 from app.services.workflow_exec import execute_run
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -124,6 +125,7 @@ async def list_workflows(
         select(Workflow).where(Workflow.user_id == user.id).order_by(Workflow.id.desc())
     )
     wfs = result.scalars().all()
+    await expire_stale_runs(db, user_id=user.id)
     thumbs: dict[int, str] = {}
     need = [w.id for w in wfs if not w.cover_url]
     for wid in need:
@@ -237,6 +239,9 @@ async def start_run(
         await db.flush()
         workflow_id = wf.id
 
+    if workflow_id is not None:
+        await abandon_active_runs(db, user_id=user.id, workflow_id=workflow_id)
+
     run = WorkflowRun(
         workflow_id=workflow_id,
         user_id=user.id,
@@ -258,6 +263,7 @@ async def list_runs(
     db: AsyncSession = Depends(get_db),
     limit: int = 30,
 ) -> list[WorkflowRunOut]:
+    await expire_stale_runs(db, user_id=user.id)
     result = await db.execute(
         select(WorkflowRun)
         .where(WorkflowRun.user_id == user.id)
@@ -276,6 +282,8 @@ async def get_run(
     run = await db.get(WorkflowRun, run_id)
     if run is None or run.user_id != user.id:
         raise HTTPException(status_code=404, detail="运行记录不存在")
+    await expire_stale_runs(db, user_id=user.id, run_id=run.id)
+    await db.refresh(run)
     return _run_out(run)
 
 
@@ -299,6 +307,8 @@ async def stream_run_events(
                 if run is None:
                     yield "event: error\ndata: {\"detail\":\"gone\"}\n\n"
                     return
+                await expire_stale_runs(db, user_id=user.id, run_id=run.id)
+                await db.refresh(run)
                 payload = _run_out(run).model_dump(mode="json")
                 blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
                 terminal = run.status in _TERMINAL
@@ -405,6 +415,8 @@ async def get_workflow(
     wf = await db.get(Workflow, workflow_id)
     if wf is None or wf.user_id != user.id:
         raise HTTPException(status_code=404, detail="项目不存在")
+    await expire_stale_runs(db, user_id=user.id, workflow_id=wf.id)
+    await db.refresh(wf)
     thumb = None if wf.cover_url else await latest_image_url(db, wf.id)
     return _workflow_out(wf, thumb=thumb)
 
@@ -425,6 +437,18 @@ async def update_workflow(
         wf.brand = body.brand.strip() or wf.brand
     if body.graph is not None:
         dumped = body.graph.model_dump()
+        await expire_stale_runs(db, user_id=user.id, workflow_id=wf.id)
+        live = (
+            await db.execute(
+                select(WorkflowRun.id).where(
+                    WorkflowRun.workflow_id == wf.id,
+                    WorkflowRun.status.in_(
+                        {WorkflowRunStatus.PENDING.value, WorkflowRunStatus.RUNNING.value}
+                    ),
+                ).limit(1)
+            )
+        ).first()
+        dumped = sanitize_saved_graph(dumped, has_live_run=live is not None)
         await persist_graph(db, wf, dumped, source="user_save")
         if not (body.brand or "").strip():
             wf.brand = brand_from_graph(wf.graph_json)

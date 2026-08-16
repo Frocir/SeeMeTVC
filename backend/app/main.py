@@ -12,6 +12,7 @@ from app.db import Base, SessionLocal, engine
 from app.services.ledger import ensure_opening_balances
 from app.services.migrate_projects import apply_schema_updates, migrate_project_space
 from app.services.project_assets import fill_empty_covers
+from app.services.run_watchdog import expire_stale_runs
 
 
 @asynccontextmanager
@@ -28,6 +29,9 @@ async def lifespan(_: FastAPI):
     async with SessionLocal() as db:
         await ensure_opening_balances(db)
         await db.commit()
+    async with SessionLocal() as db:
+        # Child process just started — leftover running rows have no executor.
+        await expire_stale_runs(db, force=True)
     yield
     await engine.dispose()
 

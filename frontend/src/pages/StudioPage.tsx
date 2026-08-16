@@ -11,6 +11,7 @@ import {
   type ParallelQuota,
 } from "../api";
 import { useAuth } from "../auth";
+import { DEFAULT_VIDEO_MODEL_ID } from "../videoIds";
 import { BEAUTY_PROMOS, type BeautyPromo } from "../beautyAssets";
 import BeautyPromoGallery from "../components/BeautyPromoGallery";
 import ReferenceImageField from "../components/ReferenceImageField";
@@ -52,7 +53,7 @@ export default function StudioPage() {
     ]).then(([list, recent, q]) => {
       setModels(list);
       if (list[0]) {
-        setModelId(list.find((m) => m.model_id === "seedance-2.5")?.model_id || list[0].model_id);
+        setModelId(list.find((m) => m.model_id === DEFAULT_VIDEO_MODEL_ID)?.model_id || list[0].model_id);
       }
       setJobs(recent);
       setQuota(q);
@@ -172,7 +173,7 @@ export default function StudioPage() {
             <div className="empty-hint" role="status">
               <strong>暂无可用模型</strong>
               <p className="muted">
-                请超管在「超管」页对 Seedance Lite / 2.5 填写<strong>火山方舟 ARK_API_KEY</strong>并启用。
+                请超管在「超管」页对 Seedance Lite / Fast / 2.5 填写<strong>火山方舟 ARK_API_KEY</strong>并启用。
               </p>
               {showAdmin && me?.role === "super_admin" && (
                 <Link className="linkish" to="/admin">
@@ -243,11 +244,15 @@ export default function StudioPage() {
               有效时长 <strong>{selected.duration_min ?? 2}–{selected.duration_max ?? 30} 秒</strong>
               {selected.model_id === "seedance-2.5"
                 ? "（方舟 2.x 最短约 4 秒；填更短会按下限生成并计费）"
-                : selected.model_id === "seedance-lite"
-                  ? "（方舟 Lite 约 2–12 秒；超出自动夹紧）"
-                  : "（超出自动夹紧）"}
+                : selected.model_id === "seedance-fast"
+                  ? "（方舟 Fast 约 4–15 秒；超出自动夹紧）"
+                  : selected.model_id === "seedance-lite"
+                    ? "（方舟 Lite 约 2–12 秒；超出自动夹紧）"
+                    : "（超出自动夹紧）"}
               {selected.supports_audio ? " · 有声" : " · 无原生音频"}
-              {selected.model_id === "seedance-lite" || selected.model_id === "seedance-2.5"
+              {selected.model_id === "seedance-lite" ||
+              selected.model_id === "seedance-fast" ||
+              selected.model_id === "seedance-2.5"
                 ? " · 有参考图走图生，否则文生"
                 : ""}
             </p>

@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+import { DEFAULT_VIDEO_MODEL_ID } from "../videoIds";
 import { dropClosedNarrationEdges } from "./ports";
 import { syncWiredData } from "./sync";
 import { defaultData } from "./templates";
@@ -27,7 +28,7 @@ export function toApiGraph(nodes: Node<WfData>[], edges: Edge[]) {
 
 function resolveVideoModelId(raw: unknown, preferred: string): string {
   const mid = String(raw || "").trim();
-  if (!mid || mid === "seedance") return preferred || "seedance-2.5";
+  if (!mid || mid === "seedance") return preferred || DEFAULT_VIDEO_MODEL_ID;
   return mid;
 }
 

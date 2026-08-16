@@ -7,6 +7,8 @@ import uuid
 from collections import defaultdict, deque
 from typing import Any
 
+from app.services import seedance
+
 # Match frontend/src/workflow/templates.ts grid.
 LAYOUT_NODE_W = 300
 LAYOUT_NODE_H = 320
@@ -137,7 +139,7 @@ def default_data(node_type: str) -> dict[str, Any]:
             "nodeType": "ImageToVideo",
             "label": "出视频",
             "duration_seconds": 5,
-            "model_id": "seedance-2.5",
+            "model_id": seedance.DEFAULT_VIDEO_MODEL_ID,
         }
     if nt == "VideoTrim":
         return {"nodeType": "VideoTrim", "label": "裁视频", "trim_start": 0, "trim_end": 5}

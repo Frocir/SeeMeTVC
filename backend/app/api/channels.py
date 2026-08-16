@@ -44,6 +44,8 @@ def _model_meta(ch: Channel) -> tuple[int, int, bool, bool]:
     family = seedance.fal_family(ch)
     if family == "seedance-2.5":
         return 4, 30, True, True
+    if family == "seedance-fast":
+        return 4, 15, True, True
     if family == "seedance-lite":
         return 2, 12, False, True
     return 2, 30, False, True

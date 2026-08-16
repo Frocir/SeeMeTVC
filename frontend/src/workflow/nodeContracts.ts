@@ -388,13 +388,6 @@ export function cannotRunReason(
     }
   }
 
-  if (targets.length) {
-    const blocked = nodes.find((n) => targets.includes(n.id) && upstreamFailed(n.id, nodes, edges, contracts));
-    if (blocked) {
-      return `「${blocked.data.label || blocked.id}」前面的步骤失败了，请先重跑前面的，或点「开始生成」整条重来。`;
-    }
-  }
-
   let checkNodes: Node<WfData>[];
   if (targets.length) {
     checkNodes = nodes.filter((n) => targets.includes(n.id));
@@ -441,28 +434,4 @@ export function cannotRunReason(
     if (ch === "asr" && opts.asrReady === false) return msgs.asr;
   }
   return null;
-}
-
-function upstreamFailed(
-  nodeId: string,
-  nodes: Node<WfData>[],
-  edges: EdgeRef[],
-  contracts: NodeContracts,
-): boolean {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const seen = new Set<string>();
-  const stack = [nodeId];
-  while (stack.length) {
-    const id = stack.pop() as string;
-    for (const e of edges) {
-      if (e.target !== id) continue;
-      if (seen.has(e.source)) continue;
-      seen.add(e.source);
-      const src = byId.get(e.source);
-      if (!src) continue;
-      if (isProducer(contracts, src.data.nodeType) && src.data.runStatus === "failed") return true;
-      stack.push(e.source);
-    }
-  }
-  return false;
 }

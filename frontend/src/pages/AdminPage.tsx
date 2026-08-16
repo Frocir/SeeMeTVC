@@ -58,9 +58,22 @@ const PROVIDER_PRESETS: Record<
     model_id: "seedance-2.5",
     upstream_model: "doubao-seedance-2-0-260128",
     cost_per_second: 8,
-    priority: 70,
+    priority: 90,
     enabled: false,
     remark: "火山方舟 Seedance 2.x（产品称 2.5）。超管改 Key 后启用。",
+  },
+  "ark-fast": {
+    label: "火山方舟 · Seedance Fast",
+    hint: "ARK_API_KEY 存渠道表；默认同步音频；约 4–15s；720p。比 2.5 快、比 Lite 有声",
+    provider: "ark",
+    kind: "video",
+    base_url: "https://ark.cn-beijing.volces.com",
+    model_id: "seedance-fast",
+    upstream_model: "doubao-seedance-2-0-fast-260128",
+    cost_per_second: 4,
+    priority: 90,
+    enabled: false,
+    remark: "火山方舟 Seedance 2.0 Fast。超管改 Key 后启用。",
   },
   ark: {
     label: "火山方舟（通用）",
@@ -270,6 +283,7 @@ function guessPreset(ch: Pick<Channel, "provider" | "kind" | "model_id" | "base_
   }
   if (ch.provider === "agnes" || ch.provider === "pavo") return "agnes";
   if (ch.model_id === "seedance-2.5") return "ark-2.5";
+  if (ch.model_id === "seedance-fast") return "ark-fast";
   if (ch.model_id === "seedance-lite") return "ark-lite";
   if (ch.provider === "ark" || ch.provider === "fal" || ch.provider === "volc") return "ark";
   return "ark-lite";
@@ -600,7 +614,7 @@ export default function AdminPage() {
             <div>
               <h2>渠道列表</h2>
               <p className="muted">
-                点「编辑」可改全部设置。Key 只存在渠道表；编辑时 Key 留空则不改。Seedance Lite / 2.5 改 Key 会同步。
+                点「编辑」可改全部设置。Key 只存在渠道表；编辑时 Key 留空则不改。Seedance Lite / Fast / 2.5 改 Key 会同步。
               </p>
             </div>
             <button type="button" className="primary admin-cta" onClick={openCreate}>
@@ -843,7 +857,7 @@ export default function AdminPage() {
               />
             </label>
             <p className="muted" style={{ marginTop: "-0.35rem" }}>
-              覆盖 provider 默认能力。留空则用内置矩阵（如 Seedance 2.5 支持首尾帧，Lite / OpenAI 图默认仅 size）。
+              覆盖 provider 默认能力。留空则用内置矩阵（如 Seedance 2.5 / Fast 支持首尾帧，Lite / OpenAI 图默认仅 size）。
             </p>
             <div className="modal-actions">
               <button type="submit" className="primary admin-cta">

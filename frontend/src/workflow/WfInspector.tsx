@@ -454,18 +454,22 @@ export default function WfInspector({
                     当前模型有效时长 <strong>{dMin}–{dMax} 秒</strong>
                     {m?.model_id === "seedance-2.5"
                       ? "（火山方舟 Seedance 2.x 最短约 4 秒；填更短会按下限生成并计费）。"
-                      : m?.model_id === "seedance-lite"
-                        ? "（火山方舟 Seedance Lite：约 2–12 秒；超出范围会自动夹紧）。"
-                        : "（超出范围提交时会自动夹紧）。"}
+                      : m?.model_id === "seedance-fast"
+                        ? "（火山方舟 Seedance Fast：约 4–15 秒；超出范围会自动夹紧）。"
+                        : m?.model_id === "seedance-lite"
+                          ? "（火山方舟 Seedance Lite：约 2–12 秒；超出范围会自动夹紧）。"
+                          : "（超出范围提交时会自动夹紧）。"}
                     {" "}点「开始生成」时用这里的时长。
                   </p>
                   {m && (
                     <p className="wf-field-hint">
                       {m.model_id === "seedance-2.5"
                         ? "火山方舟 Seedance 2.x：有参考图走图生，否则文生；默认同步音频。支持首尾帧。"
-                        : m.model_id === "seedance-lite"
-                          ? "火山方舟 Seedance Lite：有参考图走图生，否则文生；无原生音频。不支持首尾帧。"
-                          : null}
+                        : m.model_id === "seedance-fast"
+                          ? "火山方舟 Seedance Fast：有参考图走图生，否则文生；默认同步音频。支持首尾帧。比 2.5 快，最长约 15 秒。"
+                          : m.model_id === "seedance-lite"
+                            ? "火山方舟 Seedance Lite：有参考图走图生，否则文生；无原生音频。不支持首尾帧。"
+                            : null}
                     </p>
                   )}
                   <ReferenceImageField

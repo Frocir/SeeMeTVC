@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -746,7 +748,16 @@ async def _run_shot(
             url: str | None = None
             rate_hits = 0
             family = seedance.fal_family(channel)
+            wait_limit = int(interval * polls)
+            started = time.monotonic()
             for _ in range(polls):
+                await db.refresh(run)
+                if run.status in {
+                    WorkflowRunStatus.CANCELLED.value,
+                    WorkflowRunStatus.FAILED.value,
+                    WorkflowRunStatus.REFUNDED.value,
+                }:
+                    raise WorkflowExecError("已取消")
                 status, got = await seedance.poll_generation(
                     channel, task_id, user_id=user.id
                 )
@@ -765,12 +776,20 @@ async def _run_shot(
                     await asyncio.sleep(min(15.0 * rate_hits, 60.0))
                     continue
                 if on_hint:
+                    elapsed = max(0, int(time.monotonic() - started))
+                    mm, ss = divmod(elapsed, 60)
+                    waited = f"{mm} 分 {ss:02d} 秒" if mm else f"{ss} 秒"
+                    cap = f"{wait_limit // 60} 分钟"
                     if is_agnes:
-                        await on_hint("生成中（Agnes 状态查询已节流）…")
+                        await on_hint(f"生成中（Agnes，已等 {waited}）…")
                     elif family == "seedance-2.5":
-                        await on_hint("生成中（火山方舟 Seedance 2.x，可能需数分钟）…")
+                        await on_hint(f"生成中（Seedance 2.5，已等 {waited}，上限约 {cap}）…")
+                    elif family == "seedance-fast":
+                        await on_hint(f"生成中（Seedance Fast，已等 {waited}，上限约 {cap}）…")
                     elif family == "seedance-lite":
-                        await on_hint("生成中（火山方舟 Seedance Lite）…")
+                        await on_hint(f"生成中（Seedance Lite，已等 {waited}）…")
+                    else:
+                        await on_hint(f"生成中（已等 {waited}）…")
                 await asyncio.sleep(interval)
             if not url:
                 if rate_hits:
@@ -1493,6 +1512,7 @@ async def execute_run(run_id: int) -> None:
                         st.pop("hint", None)
                     node_states[nid] = st
                     run.node_states_json = json.dumps(node_states, ensure_ascii=False)
+                    run.updated_at = datetime.now(timezone.utc)
                     await db.commit()
 
                 if ntype in ("TextAsset", "BriefInput", "ScenePlan"):
@@ -1656,6 +1676,12 @@ async def execute_run(run_id: int) -> None:
 
         except Exception as exc:  # noqa: BLE001
             await db.refresh(run)
+            if run.status in {
+                WorkflowRunStatus.FAILED.value,
+                WorkflowRunStatus.REFUNDED.value,
+                WorkflowRunStatus.SUCCEEDED.value,
+            }:
+                return
             if run.status == WorkflowRunStatus.CANCELLED.value or str(exc) == "已取消":
                 run.status = WorkflowRunStatus.CANCELLED.value
                 run.error_message = "已取消"

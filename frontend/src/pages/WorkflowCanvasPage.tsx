@@ -30,6 +30,7 @@ import {
   type WorkflowRun,
 } from "../api";
 import { useAuth } from "../auth";
+import { DEFAULT_VIDEO_MODEL_ID } from "../videoIds";
 import { ensureUpstreamImageUrl } from "../imageUrl";
 import { mediaNodeTypes } from "../workflow/canvas/MediaNode";
 import { fromApiGraph, toApiGraph } from "../workflow/graph";
@@ -162,7 +163,7 @@ export default function WorkflowCanvasPage() {
   /** Suppress auto-queue after manual/template runs so we don't double-hit Agnes. */
   const suppressAutoUntil = useRef(0);
   const modelId =
-    models.find((m) => m.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
+    models.find((m) => m.model_id === DEFAULT_VIDEO_MODEL_ID)?.model_id || models[0]?.model_id || "";
   const llmModelId = llmModels[0]?.model_id || "";
   const ttsModelId = ttsModels[0]?.model_id || "tts-1";
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<WfData>>([]);
@@ -210,7 +211,7 @@ export default function WorkflowCanvasPage() {
         setImageModels(imgs);
         setAsrModels(asr);
         setContracts(cons);
-        const mid = m.find((x) => x.model_id === "seedance-2.5")?.model_id || m[0]?.model_id || "";
+        const mid = m.find((x) => x.model_id === DEFAULT_VIDEO_MODEL_ID)?.model_id || m[0]?.model_id || "";
         setWorkflowId(wf.id);
         setName(wf.name);
         const g = fromApiGraph(wf.graph, mid);
@@ -351,6 +352,10 @@ export default function WorkflowCanvasPage() {
       if (d.image_url) {
         d.image_url = (await ensureUpstreamImageUrl(d.image_url)) || undefined;
       }
+      if (d.runStatus === "running") {
+        d.runStatus = undefined;
+        d.runError = undefined;
+      }
       patchedNodes.push({ ...n, data: d });
     }
     setNodes((ns) =>
@@ -386,14 +391,16 @@ export default function WorkflowCanvasPage() {
       setQueueNote("无法生成");
       return;
     }
-    if (runningRef.current) {
-      setQueueNote("队列忙碌：已有任务在执行");
-      return;
-    }
     setBusy(true);
     setError("");
     setQueueNote(note || (targetIds ? `正在生成 ${targetIds.length} 步` : "正在生成整条流程"));
     runningRef.current = true;
+    setNodes((ns) =>
+      ns.map((n) => {
+        if (n.data.runStatus !== "running" && n.data.runStatus !== "failed") return n;
+        return { ...n, data: { ...n.data, runStatus: undefined, runError: undefined } };
+      }),
+    );
     // Full template / manual runs: pause auto-queue so it cannot open a 2nd Agnes poller
     suppressAutoUntil.current = Date.now() + (targetIds ? 15_000 : 120_000);
     try {
@@ -449,7 +456,7 @@ export default function WorkflowCanvasPage() {
     try {
       await saveDraft({ silent: true });
       const out = await expandScenesToNodes(workflowId, selectedId, mode);
-      const mid = models.find((x) => x.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
+      const mid = models.find((x) => x.model_id === DEFAULT_VIDEO_MODEL_ID)?.model_id || models[0]?.model_id || "";
       const g = fromApiGraph(out.graph, mid);
       setNodes(g.nodes);
       setEdges(g.edges);
@@ -484,7 +491,7 @@ export default function WorkflowCanvasPage() {
     setError("");
     try {
       const wf = await api<Workflow>(`/api/workflows/${workflowId}/undo`, { method: "POST" });
-      const mid = models.find((x) => x.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
+      const mid = models.find((x) => x.model_id === DEFAULT_VIDEO_MODEL_ID)?.model_id || models[0]?.model_id || "";
       const g = fromApiGraph(wf.graph, mid);
       setNodes(g.nodes);
       setEdges(g.edges);
@@ -697,12 +704,12 @@ export default function WorkflowCanvasPage() {
           <button
             type="button"
             className="cv-chip-btn primary"
-            disabled={busy || agentLocked || (!!run && isActiveRun(run.status))}
+            disabled={busy || agentLocked}
             title={runBlock || undefined}
             data-tour="run"
             onClick={() => void startRun(undefined, "正在生成整条流程")}
           >
-            开始生成
+            {run && isActiveRun(run.status) ? "重新生成" : "开始生成"}
           </button>
         </div>
       </div>
@@ -761,7 +768,7 @@ export default function WorkflowCanvasPage() {
                 selectedNodeId={selectedId}
                 viewport={viewport}
                 onGraph={(graph: AgentGraph) => {
-                  const mid = models.find((x) => x.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
+                  const mid = models.find((x) => x.model_id === DEFAULT_VIDEO_MODEL_ID)?.model_id || models[0]?.model_id || "";
                   const g = fromApiGraph(graph, mid);
                   setNodes(g.nodes);
                   setEdges(g.edges);
@@ -833,7 +840,7 @@ export default function WorkflowCanvasPage() {
                     setLeftTab("nodes");
                   }}
                   onApplyGraph={(graph, nodeId) => {
-                    const mid = models.find((x) => x.model_id === "seedance-2.5")?.model_id || modelId;
+                    const mid = models.find((x) => x.model_id === DEFAULT_VIDEO_MODEL_ID)?.model_id || modelId;
                     const g = fromApiGraph(
                       graph as { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> },
                       mid,
@@ -922,7 +929,7 @@ export default function WorkflowCanvasPage() {
                     }
                   : undefined
               }
-              canGenerate={selectedCanGenerate && !busy && !agentLocked && !(run && isActiveRun(run.status))}
+              canGenerate={selectedCanGenerate && !busy && !agentLocked}
               onExpandScenes={(mode) => void expandSelectedScenes(mode)}
               canExpandScenes={
                 normalizeNodeType(selected.data.nodeType) === "VideoReversePrompt" &&

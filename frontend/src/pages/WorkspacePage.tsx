@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, STATUS_LABEL, type ModelOption, type Workflow, type WorkflowRun } from "../api";
+import { DEFAULT_VIDEO_MODEL_ID } from "../videoIds";
 import { createDraft } from "../workflow/createDraft";
 import { graphAspect, graphBrand } from "../workflow/draftMeta";
 import { WF_TEMPLATES, type WfTemplateId } from "../workflow/templates";
@@ -37,7 +38,7 @@ export default function WorkspacePage() {
   const [newTpl, setNewTpl] = useState<WfTemplateId>("beauty_linear");
 
   const modelId =
-    models.find((m) => m.model_id === "seedance-2.5")?.model_id || models[0]?.model_id || "";
+    models.find((m) => m.model_id === DEFAULT_VIDEO_MODEL_ID)?.model_id || models[0]?.model_id || "";
 
   async function reload() {
     const [wfs, rs, ms] = await Promise.all([

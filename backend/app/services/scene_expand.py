@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services import graph_ops
+from app.services import graph_ops, seedance
 
 NODE_W = 320
 GAP_X = 170
@@ -141,7 +141,7 @@ def expand_scenes_to_nodes(
                 "prompt": prompt,
                 "text": prompt,
                 "duration_seconds": 5,
-                "model_id": "seedance-2.5",
+                "model_id": seedance.DEFAULT_VIDEO_MODEL_ID,
                 "source_reverse_node_id": source_node_id,
                 "source_scene_id": scene.get("id") or f"scene_{idx:03d}",
             },

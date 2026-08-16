@@ -52,7 +52,7 @@ compose 要求 `.env` 里 `JWT_SECRET`、`BOOTSTRAP_ADMIN_PASSWORD`、`AISRV_API
 
 | 用途 | 渠道 | 说明 |
 | --- | --- | --- |
-| 图生 / 文生视频 | 火山方舟 Seedance Lite / 2.5 | `ARK_API_KEY` 填渠道表。Lite 约 2–12s、无原生音频；2.5 默认同步音频、可参考图 / 首尾帧 |
+| 图生 / 文生视频 | 火山方舟 Seedance Lite / Fast / 2.5 | 默认 Fast。`ARK_API_KEY` 填渠道表。Lite 约 2–12s、无原生音频；Fast 约 4–15s、默认同步音频；2.5 更长、默认同步音频、可参考图 / 首尾帧 |
 | Agent 对话（默认） | DeepSeek-V4-Pro | 官方 `https://api.deepseek.com`，上游 `deepseek-v4-pro` |
 | Agent 对话 | DeepSeek-V4-Pro（tqx） / Claude Sonnet 4.6 / GPT-5.4 | 网关 `https://llm.tqx.ai`。tqx 与官方 DeepSeek **Key 不能混用** |
 | 文生图 | Gemini（向量引擎）或 OpenAI 兼容 Images | |
@@ -105,7 +105,7 @@ FastAPI  backend/
 - 官方模板可预填一条龙（美学成片 / 硬件成片 / 硬件工坊 / 快测）；可单节点跑或一键跑；输入变化可自动排队（Agent 改图时会抑制，避免抢跑）。
 - 顶栏 **一键排版**：按依赖分层。Agent 搭完图也会调同一套 `layout_graph`。
 - 素材库、上传（参考图自动压缩）、检查器改参；生成历史可丢回画布。
-- Seedance 2.5 支持风格 / 角色 / 产品参考图（按模型能力开关）。
+- Seedance 2.5 / Fast 支持首尾帧（按模型能力开关）。默认 **Fast**（有声、最长约 15 秒）；检查器可切回 2.5 或 Lite。
 
 **TVC Agent**
 

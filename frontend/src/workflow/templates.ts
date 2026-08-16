@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+import { DEFAULT_VIDEO_MODEL_ID } from "../videoIds";
 import { NODE_TYPE_HINT, NODE_TYPE_LABEL } from "./labels";
 import type { PaletteItem, WfData, WfNodeType } from "./types";
 
@@ -99,7 +100,7 @@ export function defaultData(type: WfNodeType, modelId = ""): WfData {
       return {
         nodeType: "ImageToVideo",
         label: type === "ShotGenerate" ? NODE_TYPE_LABEL.ImageToVideo : label,
-        model_id: modelId || "seedance-2.5",
+        model_id: modelId || DEFAULT_VIDEO_MODEL_ID,
         duration_seconds: DEFAULT_SHOT_SECONDS,
       };
     case "TextToImage":

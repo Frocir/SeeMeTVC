@@ -137,6 +137,19 @@ def provider_default_capabilities(channel: Channel) -> dict[str, Any]:
                 "duration_max": 18,
                 "aspects": list(VIDEO_ASPECTS),
             }
+        if family == "seedance-fast" or "seedance-fast" in model or "2-0-fast" in model or "2.0-fast" in model:
+            return {
+                "kind": "video",
+                "supports_image_to_video": True,
+                "supports_text_to_video": True,
+                "supports_first_last_frame": True,
+                "supports_style_reference": False,
+                "supports_character_reference": False,
+                "supports_product_reference": False,
+                "duration_min": 4,
+                "duration_max": 15,
+                "aspects": list(VIDEO_ASPECTS),
+            }
         if family == "seedance-2.5" or "2.5" in model or "seedance-2" in model:
             return {
                 "kind": "video",
